@@ -157,7 +157,6 @@ def send_admin_request_by_tg_id(tg_id, internal_id):
         f"ID: {internal_id}\n"
         f"Тип: {'Продление' if flow == 'renew' else 'Новая подписка'}",
         reply_markup=markup,
-        disable_web_page_preview=True
     )
 
 
