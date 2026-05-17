@@ -1,56 +1,54 @@
-# telegram_bot_template
+# tg_vpn_bot
 
 
 
 ## Установка
 
-`cd /opt/`
+`git clone https://github.com/DrVidjet/tg_vpn_bot.git`
 
-`git clone https://github.com/DrVidjet/telegram_bot_template.git`
-
-`cd telegram_bot_template`
+`cd tg_vpn_bot`
 
 `nano API.conf`
 
 Указываем API бота
 
-## Создание виртуального окружения и компиляция бота
-
-`sudo apt install python3.11-venv python3.11-dev`
+`sudo apt install python3 python3.11-venv`
 
 `python3 -m venv .venv`
 
 `source .venv/bin/activate`
 
-`pyinstaller --onefile --add-data "API.conf:." --hidden-import=telebot --hidden-import=qrcode --name start_bot main.py`
-
-Выходим из виртуальной среды
-
-`deactivate`
+`pip install -r requirements.txt`
 
 ## Пробный запуск
 
-`./dist/start_bot`
+`python3 main.py`
 
-Если был вывод 'Bot is successfully started', то всё в порядке.
+Если запуск прошел успешно и мы увидели
+
+`Bot is successfully started`
+
+то выходим из виртуальной среды
+
+`deactivate`
 
 ## Делаем службу боту
 
-`sudo adduser --system --group telegram_bot --home /opt/telegram_bot_template`
+`sudo adduser --system --group tg_vpn_bot --home /opt/tg_vpn_bot`
 
-`sudo chown -R telegram_bot:telegram_bot /opt/telegram_bot_template`
+`sudo chown -R tg_vpn_bot:tg_vpn_bot /opt/tg_vpn_bot`
 
-`sudo nano /etc/systemd/system/telegram_bot_template.service`
+`sudo nano /etc/systemd/system/tg_vpn_bot.service`
 
 <p>
 [Unit]<br/>
-Description=telegram_bot_template
+Description=tg_vpn_bot
 
 [Service]<br/>
-Type=exec<br/>
-User=telegram_bot_template<br/>
-WorkingDirectory=/opt/telegram_bot_template/<br/>
-ExecStart=/opt/telegram_bot_template/dist/start_bot<br/>
+Type=simple<br/>
+User=tg_vpn_bot<br/>
+WorkingDirectory=/opt/tg_vpn_bot/<br/>
+ExecStart=/opt/tg_vpn_bot/.venv/bin/python3 /opt/tg_vpn_bot/main.py<br/>
 Restart=always<br/>
 RestartSec=3s<br/>
 
@@ -58,8 +56,8 @@ RestartSec=3s<br/>
 WantedBy=multi-user.target
 </p>
 
-`systemctl enable telegram_bot_template`
+`sudo systemctl daemon-reload`
 
-`systemctl start telegram_bot_template`
+`sudo systemctl enable --now tg_vpn_bot`
 
-`systemctl status telegram_bot_template`
+`sudo systemctl status tg_vpn_bot`
