@@ -112,7 +112,6 @@ def save_user(tg_id, uid, username, status):
 
 
 def get_user_link(tg_id, username):
-    """Возвращает корректную ссылку на пользователя"""
     if username and username != "no_username":
         return f"https://t.me/{username}"
     else:
@@ -132,9 +131,11 @@ def main_menu():
 
 
 def show_payment_methods(chat_id):
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("💳 Номер карты")
-    markup.add("📱 СБП")
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(types.InlineKeyboardButton("💳 Номер карты", callback_data=f"choose_method:card:{chat_id}"))
+    markup.add(types.InlineKeyboardButton("📱 СБП", callback_data=f"choose_method:sbp:{chat_id}"))
+    markup.add(types.InlineKeyboardButton("↩️ Назад", callback_data=f"choose_method:back:{chat_id}"))
+
     bot.send_message(chat_id, "💰 Выберите способ оплаты:", reply_markup=markup)
 
 
@@ -144,11 +145,10 @@ def send_admin_request_by_tg_id(tg_id, internal_id):
     user_link = get_user_link(tg_id, username)
     flow = pending.get("flow", "new")
 
-    markup = types.InlineKeyboardMarkup()
-    markup.add(
-        types.InlineKeyboardButton("✅ Подтвердить", callback_data=f"approve:{tg_id}"),
-        types.InlineKeyboardButton("❌ Отказать", callback_data=f"deny:{tg_id}")
-    )
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(types.InlineKeyboardButton("✅ Подтвердить", callback_data=f"approve:{tg_id}"))
+    markup.add(types.InlineKeyboardButton("❌ Отказать", callback_data=f"reject:{tg_id}"))
+    markup.add(types.InlineKeyboardButton("🚫 Заблокировать", callback_data=f"block:{tg_id}"))
 
     bot.send_message(
         ADMIN_ID,
@@ -156,7 +156,8 @@ def send_admin_request_by_tg_id(tg_id, internal_id):
         f"Пользователь: {user_link}\n"
         f"ID: {internal_id}\n"
         f"Тип: {'Продление' if flow == 'renew' else 'Новая подписка'}",
-        reply_markup=markup
+        reply_markup=markup,
+        disable_web_page_preview=True
     )
 
 
@@ -165,7 +166,7 @@ def send_admin_request_by_tg_id(tg_id, internal_id):
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     tg_id = message.from_user.id
-    bot.send_message(message.chat.id, "⌛", reply_markup=types.ReplyKeyboardRemove())
+    loading_msg = bot.send_message(message.chat.id, "⌛", reply_markup=types.ReplyKeyboardRemove())
 
     if tg_id in blocked_users:
         return
@@ -176,14 +177,22 @@ def start_handler(message):
         bot.send_message(message.chat.id, "🕚 Жду подтверждения")
         return
 
-    ask_vpn_offer(message)
+    ask_vpn_offer(message.chat.id, loading_msg.message_id)
 
 
-def ask_vpn_offer(message):
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    markup.add("Да", "Нет")
+def ask_vpn_offer(chat_id, loading_message_id=None):
+    if loading_message_id:
+        try:
+            bot.delete_message(chat_id, loading_message_id)
+        except:
+            pass
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("✅ Да, оформляем", callback_data=f"offer:yes:{chat_id}"),
+        types.InlineKeyboardButton("❌ Нет", callback_data=f"offer:no:{chat_id}")
+    )
     bot.send_message(
-        message.chat.id,
+        chat_id,
         "🔥 <b>Добро пожаловать в VidjetVPN</b> 🔥\n\n"
         "🌍 <b>Доступные серверы:</b>\n"
         "• 🇸🇪 Стокгольм ×2\n"
@@ -202,43 +211,55 @@ def ask_vpn_offer(message):
         reply_markup=markup
     )
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith("offer:"))
+def handle_offer_response(call):
+    _, answer, tg_id_str = call.data.split(":")
+    tg_id = int(tg_id_str)
 
-@bot.message_handler(func=lambda m: m.text in ["Да", "Нет"])
-def handle_offer_response(message):
-    tg_id = message.from_user.id
-    if tg_id in blocked_users or tg_id in pending_requests:
-        return
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
 
-    if message.text == "Нет":
-        bot.send_message(message.chat.id, "👍 Ок, если передумаете — напишите.")
+    if answer == "no":
+        bot.send_message(tg_id, "👍 Ок, если передумаете — нажмите /start")
+        bot.answer_callback_query(call.id)
         return
 
     uid = get_or_create_uid(tg_id)
     pending_requests[tg_id] = {
         "id": uid,
-        "username": message.from_user.username,
+        "username": call.from_user.username,
         "flow": "new"
     }
     payment_state[tg_id] = {"flow": "new"}
-    show_payment_methods(message.chat.id)
 
+    bot.answer_callback_query(call.id)
+    show_payment_methods(tg_id)
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip() in [
-    "📦 Моя подписка", "🔄 Продлить подписку", "📩 Поддержка"
+    "📦 Моя подписка", "🔄 Продлить подписку", "📩 Поддержка", "↩️ Назад"
 ])
 def menu_handler(message):
     tg_id = message.from_user.id
+    text = message.text.strip()
+
     if tg_id in blocked_users:
         return
-    if tg_id in pending_requests:
+
+    if text == "↩️ Назад":
+        if tg_id in pending_requests:
+            ask_vpn_offer(message.chat.id)   # ← исправить здесь
+            pending_requests.pop(tg_id, None)
+            payment_state.pop(tg_id, None)
+        return
+
+    if tg_id in pending_requests and text != "📩 Поддержка":
         bot.send_message(message.chat.id, "🕚 Жду подтверждения")
         return
 
-    text = message.text.strip()
-
     if text == "📦 Моя подписка":
         bot.send_message(message.chat.id, "📦 Ваша подписка (в разработке)")
-
     elif text == "🔄 Продлить подписку":
         uid = get_or_create_uid(tg_id)
         pending_requests[tg_id] = {
@@ -248,49 +269,8 @@ def menu_handler(message):
         }
         payment_state[tg_id] = {"flow": "renew"}
         show_payment_methods(message.chat.id)
-
     elif text == "📩 Поддержка":
         bot.send_message(message.chat.id, support_contact())
-
-
-@bot.message_handler(func=lambda m: m.text in ["💳 Номер карты", "📱 СБП"])
-def handle_payment_method(message):
-    tg_id = message.from_user.id
-    if tg_id not in payment_state:
-        return
-
-    method = "card" if "карты" in message.text else "sbp"
-    payment_state[tg_id]["method"] = method
-
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("Я оплатил", callback_data=f"paid:{tg_id}"))
-
-    if method == "card":
-        tcard = config.get("DEFAULT", "TCARD_NUMBER").strip('"')
-        scard = config.get("DEFAULT", "SCARD_NUMBER").strip('"')
-        acard = config.get("DEFAULT", "ACARD_NUMBER").strip('"')
-        bot.send_message(
-            message.chat.id,
-            f"💳 Перевод на карту:"
-            f"\n\nТ-Банк <code>{tcard}</code>\n\n"
-            f"Сбер <code>{scard}</code>\n\n"
-            f"Альфа <code>{acard}</code>\n\n"
-            "После оплаты нажмите кнопку ниже.",
-            parse_mode="HTML",
-            reply_markup=markup
-        )
-    else:
-        sbp_url = config.get("DEFAULT", "SBP_URL").strip('"')
-        qr_img = generate_qr_image(sbp_url)
-        bot.send_photo(
-            message.chat.id,
-            qr_img,
-            caption=f"📱 СБП:\n{sbp_url}\n\nПосле оплаты нажмите кнопку ниже.",
-            reply_markup=markup
-        )
-
-    bot.send_message(message.chat.id, "⌛", reply_markup=types.ReplyKeyboardRemove())
-
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("paid:"))
 def handle_paid(call):
@@ -314,8 +294,82 @@ def handle_paid(call):
     bot.send_message(tg_id, "⏳ Заявка отправлена на проверку оплаты.")
     bot.answer_callback_query(call.id)
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith("choose_method:"))
+def handle_choose_method(call):
+    parts = call.data.split(":")
+    action = parts[1]
+    tg_id = int(parts[2])
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith(("approve:", "deny:")))
+    if tg_id not in payment_state:
+        payment_state[tg_id] = {"flow": "new"}
+
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+    if action in ["back", "back_to_methods"]:
+            # === РАЗЛИЧАЕМ, откуда нажали Назад ===
+            if action == "back":
+                # Назад с экрана выбора способа оплаты → в самое начало
+                payment_state.pop(tg_id, None)
+                pending_requests.pop(tg_id, None)
+                ask_vpn_offer(tg_id)
+            else:
+                # Назад с экрана оплаты (карта/сбп) → обратно на выбор способа
+                show_payment_methods(tg_id)
+
+            bot.answer_callback_query(call.id, "Возвращаемся")
+            return
+
+    # Выбор способа оплаты (card или sbp)
+    payment_state[tg_id]["method"] = action
+
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(types.InlineKeyboardButton("✅ Я оплатил", callback_data=f"paid:{tg_id}"))
+    markup.add(types.InlineKeyboardButton("↩️ Назад", callback_data=f"choose_method:back_to_methods:{tg_id}"))
+
+    if action == "card":
+        tcard = config.get("DEFAULT", "TCARD_NUMBER").strip('"')
+        scard = config.get("DEFAULT", "SCARD_NUMBER").strip('"')
+        acard = config.get("DEFAULT", "ACARD_NUMBER").strip('"')
+        bot.send_message(
+            tg_id,
+            f"💳 Перевод на карту:\n\n"
+            f"Т-Банк <code>{tcard}</code>\n\n"
+            f"Сбер <code>{scard}</code>\n\n"
+            f"Альфа <code>{acard}</code>\n\n"
+            "После оплаты нажмите кнопку ниже.",
+            parse_mode="HTML",
+            reply_markup=markup
+        )
+    else:
+        sbp_url = config.get("DEFAULT", "SBP_URL").strip('"')
+        qr_img = generate_qr_image(sbp_url)
+        bot.send_photo(
+            tg_id,
+            qr_img,
+            caption=f"📱 СБП:\n{sbp_url}\n\nПосле оплаты нажмите кнопку ниже.",
+            reply_markup=markup
+        )
+
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("back_to_methods:"))
+def back_to_payment_methods(call):
+    tg_id = int(call.data.split(":")[1])
+
+    payment_state.pop(tg_id, None)
+
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+    show_payment_methods(call.message.chat.id, remove_previous=True)
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith(("approve:", "reject:", "block:")))
 def admin_actions(call):
     action, tg_id_str = call.data.split(":")
     tg_id = int(tg_id_str)
@@ -331,17 +385,29 @@ def admin_actions(call):
     if action == "approve":
         approved_users.add(tg_id)
         save_user(tg_id, uid, username, "approved")
-
         text = "🔄 Подписка продлена, с возвращением!" if flow == "renew" else "🎉 Подписка оплачена, добро пожаловать!"
         bot.send_message(tg_id, text, reply_markup=main_menu())
 
-    else:  # deny
+        bot.send_message(call.message.chat.id, "✅ Оплата одобрена")
+
+    elif action == "reject":
+        bot.send_message(tg_id, f"❌ Оплата отклонена.\n\nВы можете попробовать оплатить ещё раз. Если вы уверены, что оплата прошла, просьба связаться с поддержкой: {SUPPORT}")
+
+        payment_state[tg_id] = {"flow": flow}
+
+        show_payment_methods(tg_id)
+
+        bot.send_message(call.message.chat.id, "❌ Оплата отклонена")
+
+    elif action == "block":
         blocked_users.add(tg_id)
         save_user(tg_id, uid, username, "block")
-        bot.send_message(tg_id, "❌ Вам отказано в предоставлении доступа")
-        bot.send_message(call.message.chat.id, "❌ Пользователь заблокирован")
+        bot.send_message(tg_id, f"🚫 Вы заблокированы за спам. Для разблокировки свяжитесь с поддержкой: {SUPPORT}")
+
+        bot.send_message(call.message.chat.id, "🚫 Пользователь заблокирован")
 
     bot.answer_callback_query(call.id)
+
 
 
 # ====================== ЗАПУСК ======================
