@@ -8,6 +8,9 @@ import configparser
 import sys
 import fcntl
 import json
+import requests
+import uuid
+import datetime
 
 # ====================== КОНФИГУРАЦИЯ ======================
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'API.conf')
@@ -15,24 +18,87 @@ config = configparser.ConfigParser()
 config.read(CONFIG_PATH)
 
 API_TOKEN = config.get('DEFAULT', 'API').strip('"')
-ADMIN_ID = config.getint('DEFAULT', 'ADMIN_ID')          # ← Добавлено
+ADMIN_ID = config.getint('DEFAULT', 'ADMIN_ID')
 SUPPORT = "https://t.me/VidjetVPN"
+
+# Настройки X-UI
+XUI_URL = config.get('DEFAULT', 'XUI_URL').strip('"')
+XUI_API_TOKEN = config.get('DEFAULT', 'XUI_API_TOKEN').strip('"')
+XUI_INBOUND_ID = config.getint('DEFAULT', 'XUI_INBOUND_ID')
+XUI_EXPIRY_DAYS = config.getint('DEFAULT', 'XUI_EXPIRY_DAYS', fallback=31)
+
+headers = {
+    "Authorization": f"Bearer {XUI_API_TOKEN}",
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+}
 
 # Инициализируем бота
 bot = telebot.TeleBot(API_TOKEN)
 
 # ====================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ======================
-pending_requests = {}   # tg_id -> {id, username, flow}
-user_ids = {}           # tg_id -> internal_uid
+pending_requests = {}
+user_ids = {}
 blocked_users = set()
 approved_users = set()
 payment_state = {}
-
+payment_snapshot = {}
 LOCK_FILE = "/tmp/tg_vpn_bot.lock"
 uid_counter = 1
 
 # ====================== ФУНКЦИИ ======================
 
+# Создание клиента
+def create_vpn_client(tg_id: int, username: str = None, flow: str = "new"):
+    if username and username != "no_username":
+        email = f"{username}_{tg_id}@tg.bot"
+    else:
+        email = f"{tg_id}@tg.bot"
+
+    expiry_date = datetime.datetime.now() + datetime.timedelta(days=XUI_EXPIRY_DAYS)
+    expiry_ms = int(expiry_date.timestamp() * 1000)
+
+    client = {
+        "id": str(uuid.uuid4()),
+        "email": email,
+        "limitIp": 0,
+        "totalGB": 0,
+        "expiryTime": expiry_ms,
+        "enable": True,
+        "tgId": str(tg_id),
+        "subId": ""
+    }
+
+    payload = {
+        "id": XUI_INBOUND_ID,
+        "settings": json.dumps({"clients": [client]})
+    }
+
+    try:
+        r = requests.post(
+            f"{XUI_URL}/panel/api/inbounds/addClient",
+            headers=headers,
+            json=payload,
+            timeout=15
+        )
+
+        if r.status_code == 200:
+            result = r.json()
+            if result.get("success"):
+                print(f"✅ 3x-ui: Клиент {email} успешно создан")
+                return True, email
+            else:
+                print(f"❌ 3x-ui API Error: {result.get('msg')}")
+                return False, result.get('msg', 'Unknown error')
+        else:
+            print(f"❌ 3x-ui HTTP Error: {r.status_code}")
+            return False, f"HTTP {r.status_code}"
+
+    except Exception as e:
+        print(f"❌ Ошибка подключения к 3x-ui: {e}")
+        return False, str(e)
+
+# Генерация QR из ссылки
 def generate_qr_image(url: str):
     qr = qrcode.QRCode(box_size=10, border=2)
     qr.add_data(url)
@@ -44,7 +110,7 @@ def generate_qr_image(url: str):
     bio.seek(0)
     return bio
 
-
+#Предотвращение дублирующих запусков
 def acquire_lock():
     lock_file = open(LOCK_FILE, "w")
     try:
@@ -54,7 +120,7 @@ def acquire_lock():
         sys.exit(1)
     return lock_file
 
-
+# Функция подгрузки tg пользователей
 def load_users():
     global user_ids, blocked_users, approved_users, uid_counter
     if not os.path.exists("users.json"):
@@ -68,7 +134,6 @@ def load_users():
     for tg_id_str, info in data.items():
         tg_id = int(tg_id_str)
         uid = info.get("uid")
-        username = info.get("username")
         status = info.get("status")
 
         if uid is not None:
@@ -83,7 +148,7 @@ def load_users():
 
     uid_counter = max_uid + 1 if max_uid > 0 else 1
 
-
+# Выдача uid
 def get_or_create_uid(tg_id):
     global uid_counter
     if tg_id in user_ids:
@@ -93,8 +158,8 @@ def get_or_create_uid(tg_id):
     user_ids[tg_id] = uid
     return uid
 
-
-def save_user(tg_id, uid, username, status):
+# Сохранение нового пользователя в файл
+def save_user(tg_id, uid, username, status, subscriptions=1, expiry_time=None):
     if os.path.exists("users.json"):
         with open("users.json", "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -104,24 +169,43 @@ def save_user(tg_id, uid, username, status):
     data[str(tg_id)] = {
         "uid": uid,
         "username": username,
-        "status": status
+        "status": status,
+        "subscriptions": subscriptions,
+        "expiry_time": expiry_time
     }
 
     with open("users.json", "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
+# Выбор кол-ва подписок
+def ask_subscription_count(chat_id, is_renew=False, current_count=1):
+    if is_renew:
+        text = f"У вас сейчас {current_count} подписок.\n\nСколько хотите продлить?"
+        max_count = current_count
+    else:
+        text = "Сколько устройств (подписок) хотите приобрести?\n\n1 — 150₽\n2 и более — 150₽ за первую + 100₽ за каждую следующую"
+        max_count = 6
 
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    buttons = []
+    for i in range(1, max_count + 1):
+        buttons.append(types.InlineKeyboardButton(str(i), callback_data=f"count:{i}:{'renew' if is_renew else 'new'}"))
+
+    markup.add(*buttons)
+    bot.send_message(chat_id, text, reply_markup=markup)
+
+# Получение tg ссылки на пользователя
 def get_user_link(tg_id, username):
     if username and username != "no_username":
         return f"https://t.me/{username}"
     else:
         return f"tg://user?id={tg_id}"
 
-
+# Контакт поддержки
 def support_contact():
     return f"📩 Поддержка\n👤 Напишите сюда: {SUPPORT}\n\n⏱ Мы ответим вам как можно скорее."
 
-
+# Главное меню пользователя
 def main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add("📦 Моя подписка")
@@ -129,7 +213,7 @@ def main_menu():
     markup.add("📩 Поддержка")
     return markup
 
-
+# Функция выбора способа оплаты
 def show_payment_methods(chat_id):
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(types.InlineKeyboardButton("💳 Номер карты", callback_data=f"choose_method:card:{chat_id}"))
@@ -138,12 +222,14 @@ def show_payment_methods(chat_id):
 
     bot.send_message(chat_id, "💰 Выберите способ оплаты:", reply_markup=markup)
 
-
+# Функция запроса доступа у админа
 def send_admin_request_by_tg_id(tg_id, internal_id):
     pending = pending_requests.get(tg_id, {})
     username = pending.get("username") or "no_username"
     user_link = get_user_link(tg_id, username)
     flow = pending.get("flow", "new")
+
+    amount = payment_snapshot[tg_id]
 
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(types.InlineKeyboardButton("✅ Подтвердить", callback_data=f"approve:{tg_id}"))
@@ -155,10 +241,25 @@ def send_admin_request_by_tg_id(tg_id, internal_id):
         f"💰 Новая оплата\n\n"
         f"Пользователь: {user_link}\n"
         f"ID: {internal_id}\n"
-        f"Тип: {'Продление' if flow == 'renew' else 'Новая подписка'}",
+        f"Тип: {'Продление' if flow == 'renew' else 'Новая подписка'}\n"
+        f"Сумма: {amount}₽",
         reply_markup=markup,
     )
 
+# Функция подсчета стоимости подписок
+def calculate_price(count: int, current_count: int = 0):
+    if count == 1:
+        return 150
+    else:
+        return 150 + (count - 1) * 100
+
+# Получаем подписки пользователя
+def get_user_subscriptions(tg_id):
+    if not os.path.exists("users.json"):
+        return 0
+    with open("users.json", "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return data.get(str(tg_id), {}).get("subscriptions", 0)
 
 # ====================== ХЭНДЛЕРЫ ======================
 
@@ -221,7 +322,7 @@ def handle_offer_response(call):
         pass
 
     if answer == "no":
-        bot.send_message(tg_id, "👍 Ок, если передумаете — нажмите /start")
+        bot.send_message(tg_id, "👍 Ок, если передумаете — напишите /start")
         bot.answer_callback_query(call.id)
         return
 
@@ -231,10 +332,33 @@ def handle_offer_response(call):
         "username": call.from_user.username,
         "flow": "new"
     }
-    payment_state[tg_id] = {"flow": "new"}
 
     bot.answer_callback_query(call.id)
+    ask_subscription_count(tg_id, is_renew=False)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("count:"))
+def handle_count_selection(call):
+    _, count_str, mode = call.data.split(":")
+    count = int(count_str)
+    tg_id = call.message.chat.id
+
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+    amount = calculate_price(count, get_user_subscriptions(tg_id))
+
+    payment_state[tg_id] = {
+        "flow": "new" if mode == "new" else "renew",
+        "count": count,
+        "amount": amount
+    }
+
+    payment_snapshot[tg_id] = amount
+
     show_payment_methods(tg_id)
+    bot.answer_callback_query(call.id)
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip() in [
     "📦 Моя подписка", "🔄 Продлить подписку", "📩 Поддержка", "↩️ Назад"
@@ -248,7 +372,7 @@ def menu_handler(message):
 
     if text == "↩️ Назад":
         if tg_id in pending_requests:
-            ask_vpn_offer(message.chat.id)   # ← исправить здесь
+            ask_vpn_offer(message.chat.id)
             pending_requests.pop(tg_id, None)
             payment_state.pop(tg_id, None)
         return
@@ -260,14 +384,18 @@ def menu_handler(message):
     if text == "📦 Моя подписка":
         bot.send_message(message.chat.id, "📦 Ваша подписка (в разработке)")
     elif text == "🔄 Продлить подписку":
+        current_count = get_user_subscriptions(tg_id)
+        if current_count == 0:
+            bot.send_message(tg_id, "У вас пока нет активных подписок.")
+            return
+
         uid = get_or_create_uid(tg_id)
         pending_requests[tg_id] = {
             "id": uid,
             "username": message.from_user.username,
             "flow": "renew"
         }
-        payment_state[tg_id] = {"flow": "renew"}
-        show_payment_methods(message.chat.id)
+        ask_subscription_count(tg_id, is_renew=True, current_count=current_count)
     elif text == "📩 Поддержка":
         bot.send_message(message.chat.id, support_contact())
 
@@ -298,6 +426,8 @@ def handle_choose_method(call):
     parts = call.data.split(":")
     action = parts[1]
     tg_id = int(parts[2])
+    amount = payment_state[tg_id].get("amount", 150)
+    payment_state[tg_id]["method"] = action
 
     if tg_id not in payment_state:
         payment_state[tg_id] = {"flow": "new"}
@@ -308,14 +438,11 @@ def handle_choose_method(call):
         pass
 
     if action in ["back", "back_to_methods"]:
-            # === РАЗЛИЧАЕМ, откуда нажали Назад ===
             if action == "back":
-                # Назад с экрана выбора способа оплаты → в самое начало
                 payment_state.pop(tg_id, None)
                 pending_requests.pop(tg_id, None)
                 ask_vpn_offer(tg_id)
             else:
-                # Назад с экрана оплаты (карта/сбп) → обратно на выбор способа
                 show_payment_methods(tg_id)
 
             bot.answer_callback_query(call.id, "Возвращаемся")
@@ -334,7 +461,8 @@ def handle_choose_method(call):
         acard = config.get("DEFAULT", "ACARD_NUMBER").strip('"')
         bot.send_message(
             tg_id,
-            f"💳 Перевод на карту:\n\n"
+            f"💳 Перевод на карту\n"
+            f"💰 К оплате: <b>{amount}₽</b>\n\n"
             f"Т-Банк <code>{tcard}</code>\n\n"
             f"Сбер <code>{scard}</code>\n\n"
             f"Альфа <code>{acard}</code>\n\n"
@@ -348,7 +476,12 @@ def handle_choose_method(call):
         bot.send_photo(
             tg_id,
             qr_img,
-            caption=f"📱 СБП:\n{sbp_url}\n\nПосле оплаты нажмите кнопку ниже.",
+            caption=(
+                f"📱 СБП\n"
+                f"💰 К оплате: {amount}₽\n\n"
+                f"{sbp_url}\n\n"
+                f"После оплаты нажмите кнопку ниже."
+            ),
             reply_markup=markup
         )
 
@@ -382,30 +515,54 @@ def admin_actions(call):
     uid = get_or_create_uid(tg_id)
 
     if action == "approve":
-        approved_users.add(tg_id)
-        save_user(tg_id, uid, username, "approved")
-        text = "🔄 Подписка продлена, с возвращением!" if flow == "renew" else "🎉 Подписка оплачена, добро пожаловать!"
-        bot.send_message(tg_id, text, reply_markup=main_menu())
+        if flow == "new":
+            # Сначала пытаемся создать клиента в 3x-ui
+            success, error_msg = create_vpn_client(tg_id, username, flow)
 
-        bot.send_message(call.message.chat.id, "✅ Оплата одобрена")
+            if success:
+                approved_users.add(tg_id)
+                save_user(tg_id, uid, username, "approved")
+
+                admin_text = f"✅ Пользователь {tg_id} успешно создан в 3x-ui"
+                user_text = "🎉 Подписка оплачена, добро пожаловать!"
+                bot.send_message(tg_id, user_text, reply_markup=main_menu())
+            else:
+                admin_text = f"❌ Ошибка создания пользователя {tg_id} в 3x-ui\n\nОшибка: {error_msg}\n\nПопробуйте одобрить ещё раз."
+                user_text = "⏳ Ваша заявка обрабатывается.\n\nПри возникновении проблем — напишите в поддержку."
+                bot.send_message(tg_id, user_text)
+                # Важно: НЕ добавляем в approved_users и НЕ сохраняем в файл
+        else:
+            # Продление (пока без вызова API)
+            approved_users.add(tg_id)
+            save_user(tg_id, uid, username, "approved")
+            admin_text = f"✅ Продление для пользователя {tg_id} одобрено"
+            user_text = "🔄 Подписка продлена, с возвращением!"
+            bot.send_message(tg_id, user_text, reply_markup=main_menu())
+
+        bot.send_message(call.message.chat.id, admin_text)
 
     elif action == "reject":
-        bot.send_message(tg_id, f"❌ Оплата отклонена.\n\nВы можете попробовать оплатить ещё раз. Если вы уверены, что оплата прошла, просьба связаться с поддержкой: {SUPPORT}")
-
+        bot.send_message(
+            tg_id,
+            f"❌ Оплата отклонена.\n\n"
+            f"Вы можете попробовать оплатить ещё раз.\n"
+            f"Если уверены, что оплата прошла — напишите в поддержку: {SUPPORT}"
+        )
         payment_state[tg_id] = {"flow": flow}
-
         show_payment_methods(tg_id)
-
         bot.send_message(call.message.chat.id, "❌ Оплата отклонена")
 
     elif action == "block":
         blocked_users.add(tg_id)
         save_user(tg_id, uid, username, "block")
-        bot.send_message(tg_id, f"🚫 Вы заблокированы за спам. Для разблокировки свяжитесь с поддержкой: {SUPPORT}")
-
+        bot.send_message(
+            tg_id,
+            f"🚫 Вы заблокированы за спам.\n\nДля разблокировки пишите: {SUPPORT}"
+        )
         bot.send_message(call.message.chat.id, "🚫 Пользователь заблокирован")
 
     bot.answer_callback_query(call.id)
+    payment_snapshot.pop(tg_id, None)
 
 
 
