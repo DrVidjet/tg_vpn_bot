@@ -97,7 +97,7 @@ def create_vpn_client(tg_id: int, username: str = None):
 
 # Продление клиента
 def renew_vpn_client(tg_id: int, username: str = None):
-    """Продлевает подписку существующему клиенту"""
+    """Продлевает подписку существующему клиенту (рекомендуемый способ)"""
     try:
         with open("users.json", "r", encoding="utf-8") as f:
             users = json.load(f)
@@ -108,7 +108,7 @@ def renew_vpn_client(tg_id: int, username: str = None):
 
         email = user_data["email"]
 
-        # Получаем inbound
+        # 1. Получаем inbound, чтобы найти UUID клиента
         r = requests.get(
             f"{XUI_URL}/panel/api/inbounds/get/{XUI_INBOUND_ID}",
             headers=headers,
@@ -122,37 +122,47 @@ def renew_vpn_client(tg_id: int, username: str = None):
         settings = json.loads(inbound.get("settings", "{}"))
         clients = settings.get("clients", [])
 
-        new_expiry = None
+        target_client = None
         for client in clients:
             if client.get("email") == email:
-                now_ms = int(datetime.datetime.now().timestamp() * 1000)
-                current = client.get("expiryTime", 0)
-                base = max(current, now_ms)
-                new_expiry = base + (XUI_EXPIRY_DAYS * 24 * 60 * 60 * 1000)
-                client["expiryTime"] = new_expiry
+                target_client = client
                 break
 
-        if new_expiry is None:
+        if not target_client:
             return False, "Клиент не найден в inbound", email, None
 
-        # Обновляем inbound
-        payload = {"id": XUI_INBOUND_ID, "settings": json.dumps(settings)}
+        client_id = target_client.get("id")  # UUID клиента
+
+        # 2. Продлеваем дату
+        now_ms = int(datetime.datetime.now().timestamp() * 1000)
+        current = target_client.get("expiryTime", 0)
+        base = max(current, now_ms)
+        new_expiry = base + (XUI_EXPIRY_DAYS * 24 * 60 * 60 * 1000)
+
+        target_client["expiryTime"] = new_expiry
+
+        # 3. Обновляем только одного клиента
+        payload = {
+            "id": XUI_INBOUND_ID,
+            "settings": json.dumps({"clients": [target_client]})
+        }
+
         update = requests.post(
-            f"{XUI_URL}/panel/api/inbounds/update/{XUI_INBOUND_ID}",
+            f"{XUI_URL}/panel/api/inbounds/updateClient/{client_id}",
             headers=headers,
             json=payload,
             timeout=15
         )
 
         if update.status_code != 200 or not update.json().get("success"):
-            return False, "Не удалось обновить inbound", email, None
+            return False, f"Не удалось обновить клиента: {update.text}", email, None
 
-        # Обновляем users.json
+        # 4. Обновляем users.json
         user_data["expiry_time"] = new_expiry
         with open("users.json", "w", encoding="utf-8") as f:
             json.dump(users, f, ensure_ascii=False, indent=4)
 
-        print(f"✅ Подписка {email} продлена до {datetime.datetime.fromtimestamp(new_expiry/1000).date()}")
+        print(f"✅ Подписка {email} успешно продлена до {datetime.datetime.fromtimestamp(new_expiry/1000).date()}")
         return True, "", email, new_expiry
 
     except Exception as e:
