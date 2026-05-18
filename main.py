@@ -98,6 +98,81 @@ def create_vpn_client(tg_id: int, username: str = None, flow: str = "new"):
         print(f"❌ Ошибка подключения к 3x-ui: {e}")
         return False, str(e), email
 
+# Продление клиента
+def renew_vpn_client(tg_id: int, username: str = None):
+    """Продлевает существующего клиента"""
+    try:
+        with open("users.json", "r", encoding="utf-8") as f:
+            users = json.load(f)
+
+        user_data = users.get(str(tg_id))
+        if not user_data or not user_data.get("email"):
+            return False, "Пользователь не найден или email отсутствует", None
+
+        email = user_data["email"]
+
+        # Получаем текущий inbound
+        r = requests.get(
+            f"{XUI_URL}/panel/api/inbounds/get/{XUI_INBOUND_ID}",
+            headers=headers,
+            timeout=15
+        )
+
+        if r.status_code != 200:
+            return False, f"HTTP Error {r.status_code}", email
+
+        inbound = r.json().get("obj")
+        if not inbound:
+            return False, "Inbound not found", email
+
+        settings = json.loads(inbound.get("settings", "{}"))
+        clients = settings.get("clients", [])
+
+        # Ищем клиента по email
+        client_found = False
+        for client in clients:
+            if client.get("email") == email:
+                # Продлеваем
+                now_ms = int(datetime.datetime.now().timestamp() * 1000)
+                current_expiry = client.get("expiryTime", 0)
+                base_time = max(current_expiry, now_ms)
+                new_expiry = base_time + (XUI_EXPIRY_DAYS * 24 * 60 * 60 * 1000)
+
+                client["expiryTime"] = new_expiry
+                client_found = True
+                break
+
+        if not client_found:
+            return False, "Клиент не найден в inbound", email
+
+        # Обновляем inbound
+        payload = {
+            "id": XUI_INBOUND_ID,
+            "settings": json.dumps(settings)
+        }
+
+        update = requests.post(
+            f"{XUI_URL}/panel/api/inbounds/update/{XUI_INBOUND_ID}",
+            headers=headers,
+            json=payload,
+            timeout=15
+        )
+
+        if update.status_code != 200 or not update.json().get("success"):
+            return False, "Не удалось обновить inbound", email
+
+        # Обновляем users.json
+        user_data["expiry_time"] = new_expiry
+        with open("users.json", "w", encoding="utf-8") as f:
+            json.dump(users, f, ensure_ascii=False, indent=4)
+
+        print(f"✅ Подписка {email} успешно продлена")
+        return True, "", email
+
+    except Exception as e:
+        print(f"❌ Ошибка при продлении: {e}")
+        return False, str(e), None
+
 # Генерация QR из ссылки
 def generate_qr_image(url: str):
     qr = qrcode.QRCode(box_size=10, border=2)
@@ -412,7 +487,6 @@ def handle_paid(call):
         return bot.answer_callback_query(call.id, "Нет активной оплаты")
 
     flow = payment_state[tg_id]["flow"]
-    payment_state.pop(tg_id, None)
 
     uid = get_or_create_uid(tg_id)
 
@@ -524,10 +598,17 @@ def admin_actions(call):
         if flow == "new":
             # Сначала пытаемся создать клиента в 3x-ui
             success, error_msg, email = create_vpn_client(tg_id, username, flow)
-
             if success:
                 approved_users.add(tg_id)
-                save_user(tg_id, uid, email, username, "approved")
+                save_user(
+                    tg_id,
+                    uid,
+                    email,
+                    username,
+                    "approved",
+                    expiry_time=expiry_ms
+                )
+
                 bot.send_message(
                     call.message.chat.id,
                     f"✅ Пользователь {tg_id} успешно создан в 3x-ui"
@@ -546,20 +627,23 @@ def admin_actions(call):
                     "⏳ Ваша заявка обрабатывается.\n\nПри возникновении проблем — напишите в поддержку."
                 )
         else:
-            # Продление (пока без вызова API)
-            approved_users.add(tg_id)
-            save_user(tg_id, uid, email, username, "approved")
+            success, error_msg, email = renew_vpn_client(tg_id, username, flow)
+            if success:
+                bot.send_message(
+                    tg_id,
+                    "🔄 Подписка продлена, с возвращением!",
+                    reply_markup=main_menu()
+                )
 
-            bot.send_message(
-                tg_id,
-                "🔄 Подписка продлена, с возвращением!",
-                reply_markup=main_menu()
-            )
-
-            bot.send_message(
-                call.message.chat.id,
-                f"✅ Продление для пользователя {tg_id} одобрено"
-            )
+                bot.send_message(
+                    call.message.chat.id,
+                    f"✅ Продление для пользователя {tg_id} одобрено"
+                )
+            else:
+                bot.send_message(
+                    call.message.chat.id,
+                    f"❌ Ошибка продления {tg_id}\n\nОшибка: {error_msg}"
+                )
 
     elif action == "reject":
         bot.send_message(
@@ -579,7 +663,7 @@ def admin_actions(call):
 
     elif action == "block":
         blocked_users.add(tg_id)
-        save_user(tg_id, uid, username, "block")
+        save_user(tg_id, uid, "", username, "block")
 
         bot.send_message(
             tg_id,
@@ -591,10 +675,10 @@ def admin_actions(call):
             "🚫 Пользователь заблокирован"
         )
 
+    payment_state.pop(tg_id, None)
+    pending_requests.pop(tg_id, None)
     bot.answer_callback_query(call.id)
     payment_snapshot.pop(tg_id, None)
-
-
 
 # ====================== ЗАПУСК ======================
 if __name__ == '__main__':
