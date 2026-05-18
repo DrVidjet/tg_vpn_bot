@@ -181,6 +181,15 @@ def generate_qr_image(url: str):
     bio.seek(0)
     return bio
 
+# Слава русскому языку
+def get_subscription_word(count: int) -> str:
+    if count == 1:
+        return "подписка"
+    elif count in (2, 3, 4):
+        return "подписки"
+    else:
+        return "подписок"
+
 #Предотвращение дублирующих запусков
 def acquire_lock():
     lock_file = open(LOCK_FILE, "w")
@@ -273,10 +282,17 @@ def save_user(tg_id, uid, email=None, username=None, status="approved",
 # Выбор кол-ва подписок
 def ask_subscription_count(chat_id, is_renew=False, current_count=1):
     if is_renew:
-        text = f"У вас сейчас {current_count} подписок.\n\nСколько хотите продлить?"
+        word = get_subscription_word(current_count)
+        text = f"🔄 <b>Продление подписки</b>\n\n" \
+               f"У вас сейчас <b>{current_count}</b> {word}.\n\n" \
+               f"Сколько хотите продлить?"
         max_count = current_count
     else:
-        text = "Сколько устройств (подписок) хотите приобрести?\n\n1 — 150₽\n2 и более — 150₽ за первую + 100₽ за каждую следующую"
+        text = "🛒 <b>Сколько устройств хотите подключить?</b>\n\n" \
+               "💰 <b>Цены:</b>\n" \
+               "• 1 подписка — <b>150₽</b>\n" \
+               "• 2 и более — <b>150₽</b> за первую + <b>100₽</b> за каждую следующую\n\n" \
+               "🔹 1 подписка = 1 устройство"
         max_count = 6
 
     markup = types.InlineKeyboardMarkup(row_width=3)
@@ -285,7 +301,7 @@ def ask_subscription_count(chat_id, is_renew=False, current_count=1):
         buttons.append(types.InlineKeyboardButton(str(i), callback_data=f"count:{i}:{'renew' if is_renew else 'new'}"))
 
     markup.add(*buttons)
-    bot.send_message(chat_id, text, reply_markup=markup)
+    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
 # Получение tg ссылки на пользователя
 def get_user_link(tg_id, username):
