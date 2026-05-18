@@ -86,17 +86,17 @@ def create_vpn_client(tg_id: int, username: str = None, flow: str = "new"):
             result = r.json()
             if result.get("success"):
                 print(f"✅ 3x-ui: Клиент {email} успешно создан")
-                return True, email
+                return True, "", email
             else:
                 print(f"❌ 3x-ui API Error: {result.get('msg')}")
-                return False, result.get('msg', 'Unknown error')
+                return False, result.get('msg', 'Unknown error'), email
         else:
             print(f"❌ 3x-ui HTTP Error: {r.status_code}")
-            return False, f"HTTP {r.status_code}"
+            return False, f"HTTP {r.status_code}", email
 
     except Exception as e:
         print(f"❌ Ошибка подключения к 3x-ui: {e}")
-        return False, str(e)
+        return False, str(e), email
 
 # Генерация QR из ссылки
 def generate_qr_image(url: str):
@@ -159,7 +159,7 @@ def get_or_create_uid(tg_id):
     return uid
 
 # Сохранение нового пользователя в файл
-def save_user(tg_id, uid, username, status, subscriptions=1, expiry_time=None):
+def save_user(tg_id, uid, email, username, status, subscriptions=1, expiry_time=None):
     if os.path.exists("users.json"):
         with open("users.json", "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -168,6 +168,7 @@ def save_user(tg_id, uid, username, status, subscriptions=1, expiry_time=None):
 
     data[str(tg_id)] = {
         "uid": uid,
+        "email": email,
         "username": username,
         "status": status,
         "subscriptions": subscriptions,
@@ -222,8 +223,16 @@ def show_payment_methods(chat_id):
 
     bot.send_message(chat_id, "💰 Выберите способ оплаты:", reply_markup=markup)
 
+# Кнопки админа
+def admin_keyboard(tg_id):
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(types.InlineKeyboardButton("✅ Подтвердить", callback_data=f"approve:{tg_id}"))
+    markup.add(types.InlineKeyboardButton("❌ Отказать", callback_data=f"reject:{tg_id}"))
+    markup.add(types.InlineKeyboardButton("🚫 Заблокировать", callback_data=f"block:{tg_id}"))
+    return markup
+
 # Функция запроса доступа у админа
-def send_admin_request_by_tg_id(tg_id, internal_id):
+def send_admin_request_by_tg_id(tg_id, uid):
     pending = pending_requests.get(tg_id, {})
     username = pending.get("username") or "no_username"
     user_link = get_user_link(tg_id, username)
@@ -231,16 +240,13 @@ def send_admin_request_by_tg_id(tg_id, internal_id):
 
     amount = payment_snapshot[tg_id]
 
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(types.InlineKeyboardButton("✅ Подтвердить", callback_data=f"approve:{tg_id}"))
-    markup.add(types.InlineKeyboardButton("❌ Отказать", callback_data=f"reject:{tg_id}"))
-    markup.add(types.InlineKeyboardButton("🚫 Заблокировать", callback_data=f"block:{tg_id}"))
+    markup = admin_keyboard(tg_id)
 
     bot.send_message(
         ADMIN_ID,
         f"💰 Новая оплата\n\n"
         f"Пользователь: {user_link}\n"
-        f"ID: {internal_id}\n"
+        f"ID: {uid}\n"
         f"Тип: {'Продление' if flow == 'renew' else 'Новая подписка'}\n"
         f"Сумма: {amount}₽",
         reply_markup=markup,
@@ -408,15 +414,15 @@ def handle_paid(call):
     flow = payment_state[tg_id]["flow"]
     payment_state.pop(tg_id, None)
 
-    internal_id = get_or_create_uid(tg_id)
+    uid = get_or_create_uid(tg_id)
 
     pending_requests[tg_id] = {
-        "id": internal_id,
+        "id": uid,
         "username": pending_requests.get(tg_id, {}).get("username"),
         "flow": flow
     }
 
-    send_admin_request_by_tg_id(tg_id, internal_id)
+    send_admin_request_by_tg_id(tg_id, uid)
 
     bot.send_message(tg_id, "⏳ Заявка отправлена на проверку оплаты.")
     bot.answer_callback_query(call.id)
@@ -509,7 +515,7 @@ def admin_actions(call):
     if tg_id not in pending_requests:
         return bot.answer_callback_query(call.id, "✅ Уже обработано")
 
-    pending = pending_requests.pop(tg_id, {})
+    pending = pending_requests.get(tg_id, {})
     flow = pending.get("flow", "new")
     username = pending.get("username") or "no_username"
     uid = get_or_create_uid(tg_id)
@@ -517,29 +523,43 @@ def admin_actions(call):
     if action == "approve":
         if flow == "new":
             # Сначала пытаемся создать клиента в 3x-ui
-            success, error_msg = create_vpn_client(tg_id, username, flow)
+            success, error_msg, email = create_vpn_client(tg_id, username, flow)
 
             if success:
                 approved_users.add(tg_id)
-                save_user(tg_id, uid, username, "approved")
-
-                admin_text = f"✅ Пользователь {tg_id} успешно создан в 3x-ui"
-                user_text = "🎉 Подписка оплачена, добро пожаловать!"
-                bot.send_message(tg_id, user_text, reply_markup=main_menu())
+                save_user(tg_id, uid, email, username, "approved")
+                bot.send_message(
+                    call.message.chat.id,
+                    f"✅ Пользователь {tg_id} успешно создан в 3x-ui"
+                )
+                bot.send_message(
+                    tg_id,
+                    "🎉 Подписка оплачена, добро пожаловать!",
+                    reply_markup=main_menu())
             else:
-                admin_text = f"❌ Ошибка создания пользователя {tg_id} в 3x-ui\n\nОшибка: {error_msg}\n\nПопробуйте одобрить ещё раз."
-                user_text = "⏳ Ваша заявка обрабатывается.\n\nПри возникновении проблем — напишите в поддержку."
-                bot.send_message(tg_id, user_text)
-                # Важно: НЕ добавляем в approved_users и НЕ сохраняем в файл
+                bot.send_message(
+                    call.message.chat.id,
+                    f"❌ Ошибка создания пользователя {tg_id} в 3x-ui\n\nОшибка: {error_msg}\n\nПопробуйте одобрить ещё раз.",
+                    reply_markup=admin_keyboard(tg_id))
+                bot.send_message(
+                    tg_id,
+                    "⏳ Ваша заявка обрабатывается.\n\nПри возникновении проблем — напишите в поддержку."
+                )
         else:
             # Продление (пока без вызова API)
             approved_users.add(tg_id)
-            save_user(tg_id, uid, username, "approved")
-            admin_text = f"✅ Продление для пользователя {tg_id} одобрено"
-            user_text = "🔄 Подписка продлена, с возвращением!"
-            bot.send_message(tg_id, user_text, reply_markup=main_menu())
+            save_user(tg_id, uid, email, username, "approved")
 
-        bot.send_message(call.message.chat.id, admin_text)
+            bot.send_message(
+                tg_id,
+                "🔄 Подписка продлена, с возвращением!",
+                reply_markup=main_menu()
+            )
+
+            bot.send_message(
+                call.message.chat.id,
+                f"✅ Продление для пользователя {tg_id} одобрено"
+            )
 
     elif action == "reject":
         bot.send_message(
@@ -548,18 +568,28 @@ def admin_actions(call):
             f"Вы можете попробовать оплатить ещё раз.\n"
             f"Если уверены, что оплата прошла — напишите в поддержку: {SUPPORT}"
         )
+
         payment_state[tg_id] = {"flow": flow}
         show_payment_methods(tg_id)
-        bot.send_message(call.message.chat.id, "❌ Оплата отклонена")
+
+        bot.send_message(
+            call.message.chat.id,
+            "❌ Оплата отклонена"
+        )
 
     elif action == "block":
         blocked_users.add(tg_id)
         save_user(tg_id, uid, username, "block")
+
         bot.send_message(
             tg_id,
             f"🚫 Вы заблокированы за спам.\n\nДля разблокировки пишите: {SUPPORT}"
         )
-        bot.send_message(call.message.chat.id, "🚫 Пользователь заблокирован")
+
+        bot.send_message(
+            call.message.chat.id,
+            "🚫 Пользователь заблокирован"
+        )
 
     bot.answer_callback_query(call.id)
     payment_snapshot.pop(tg_id, None)
