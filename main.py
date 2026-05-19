@@ -934,18 +934,13 @@ def admin_actions(call):
                 approved_users.add(tg_id)
                 save_user(tg_id, uid, base_name, username, "approved", expiry_ms, sub_id)
 
-                sub_link = f"https://vidjetvpn.com:2096/subscription_vidjet_vpn_link/{sub_id}"
+                sub_link = f"{XUI_SUB_LINK}/{sub_id}"
 
                 bot.send_message(call.message.chat.id, f"✅ Пользователь {tg_id} успешно создан в 3x-ui")
 
                 # Основное сообщение со ссылкой
                 bot.send_message(
-                    tg_id,
-                    "🎉 <b>Подписка успешно активирована!</b>\n\n"
-                    f"🔗 <b>Ваша ссылка на подписку:</b>\n"
-                    f"<code>{sub_link}</code>\n\n"
-                    "📲 Нажмите на ссылку → Импорт в приложение",
-                    parse_mode="HTML"
+
                 )
 
                 bot.send_message(
@@ -955,14 +950,22 @@ def admin_actions(call):
                     "Android: https://play.google.com/store/apps/details?id=com.v2raytun.android\n"
                     "IOS: https://apps.apple.com/kz/app/v2raytun/id6476628951\n\n"
                     "2. Для Windows, MAC и Linux, а так же другие клиенты на телефон и инструкции к ним можно посмотреть по этой ссылке:\n https://gist.github.com/kksudo/9e2072b3c60a72040f4e9d6fb9da7e9c\n\n"
-                    "2. Для Android и IOS следуйте видеоинструкции ниже. На IOS пропускаем часть с маршрутизацией приложений\n\n"
+                    "2. Для Android и IOS следуйте видеоинструкции ниже. На IOS пропускаем часть с маршрутизацией приложений.\n\n"
                     f"Если будут вопросы — 👤 Напишите сюда: {SUPPORT}\n⏱ Мы ответим вам как можно скорее.",
                     parse_mode="HTML"
                 )
 
                 send_instruction_video(tg_id)
 
-                bot.send_message(tg_id, "🎉 Добро пожаловать в VidjetVPN!", reply_markup=main_menu())
+                bot.send_message(tg_id,
+                    "🎉 <b>Подписка успешно активирована!</b>\n\n"
+                    f"🔗 <b>Ваша ссылка на подписку:</b>\n"
+                    f"<code>{sub_link}</code>\n"
+                    "Переходить по ссылке не нужно, ее необходимо скопировать и вставить в приложение.\n\n"
+                    "🎉 Добро пожаловать в VidjetVPN!",
+                    parse_mode="HTML",
+                    reply_markup=main_menu()
+                )
 
                 pending_requests.pop(tg_id, None)
 
