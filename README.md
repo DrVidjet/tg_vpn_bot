@@ -4,9 +4,13 @@
 
 ## Установка
 
+`cd /opt`
+
 `git clone https://github.com/DrVidjet/tg_vpn_bot.git`
 
 `cd tg_vpn_bot`
+
+`mv API.conf.example API.conf`
 
 `nano API.conf`
 
