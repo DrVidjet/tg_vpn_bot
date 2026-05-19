@@ -618,8 +618,10 @@ def ask_vpn_offer(chat_id, loading_message_id=None):
         "⚡ <b>Преимущества:</b>\n"
         "• Без ограничений по трафику\n"
         "• Высокая скорость соединения\n"
-        "• Прямая линия с поддержкой\n"
-        "• Стабильная работа\n\n"
+        "• Стабильная работа\n"
+        "• 3 устройства на одной подписке\n"
+        "• Демократичная цена\n"
+        "• Прямая линия с поддержкой\n\n"
         "📦 <b>После оплаты вы получите:</b>\n"
         "• Конфиг для подключения\n"
         "• Пошаговую инструкцию\n\n"
@@ -847,7 +849,7 @@ def handle_choose_method(call):
         bot.send_photo(
             tg_id,
             qr_img,
-            caption=f"📱 СБП\n💰 К оплате: <b>{amount}₽</b>\n\n{sbp_url}\n\nПосле оплаты нажмите кнопку ниже.",
+            caption=f"📱 СБП\n💰 К оплате: <b>{amount}₽</b>\n\n{sbp_url}\n\nПосле оплаты нажмите кнопку ниже.", parse_mode="HTML",
             reply_markup=markup
         )
 
@@ -937,11 +939,6 @@ def admin_actions(call):
                 sub_link = f"{XUI_SUB_LINK}/{sub_id}"
 
                 bot.send_message(call.message.chat.id, f"✅ Пользователь {tg_id} успешно создан в 3x-ui")
-
-                # Основное сообщение со ссылкой
-                bot.send_message(
-
-                )
 
                 bot.send_message(
                     tg_id,
