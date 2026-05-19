@@ -487,7 +487,7 @@ def process_months_input(message, tg_id):
         bot.send_message(message.chat.id, "Введите число")
 
 # Информация о подписке
-def sub(tg_id):
+def sub(tg_id, message):
     try:
             if not os.path.exists("users.json"):
                 bot.send_message(message.chat.id, "❌ Данные подписки не найдены.")
@@ -723,7 +723,7 @@ def menu_handler(message):
         return
 
     if text == "📦 Моя подписка":
-        sub(tg_id)
+        sub(tg_id, message)
     elif text == "🔄 Продлить подписку":
         uid = get_or_create_uid(tg_id)
         pending_requests[tg_id] = {
