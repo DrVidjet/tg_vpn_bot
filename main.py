@@ -486,6 +486,51 @@ def process_months_input(message, tg_id):
     except:
         bot.send_message(message.chat.id, "Введите число")
 
+# Информация о подписке
+sub(tg_id):
+    try:
+            if not os.path.exists("users.json"):
+                bot.send_message(message.chat.id, "❌ Данные подписки не найдены.")
+                return
+
+            with open("users.json", "r", encoding="utf-8") as f:
+                users = json.load(f)
+
+            user_data = users.get(str(tg_id))
+
+            if not user_data:
+                bot.send_message(message.chat.id, "❌ Подписка не найдена.")
+                return
+
+            expiry_ms = user_data.get("expiry_time")
+            sub_id = user_data.get("sub_id")
+
+            if not expiry_ms or not sub_id:
+                bot.send_message(message.chat.id, "❌ Данные подписки неполные.")
+                return
+
+            expiry_date = datetime.datetime.fromtimestamp(
+                expiry_ms / 1000
+            ).strftime("%d.%m.%Y")
+
+            sub_link = f"{XUI_SUB_LINK}/{sub_id}"
+
+            bot.send_message(
+                message.chat.id,
+                "📦 <b>Ваша подписка</b>\n\n"
+                f"🔗 <b>Ссылка:</b>\n"
+                f"<code>{sub_link}</code>\n\n"
+                f"📅 <b>Действует до:</b> {expiry_date}\n\n"
+                "❤️ Спасибо, что вы с нами!",
+                parse_mode="HTML"
+            )
+
+        except Exception as e:
+            print(f"Ошибка получения подписки: {e}")
+            bot.send_message(
+                message.chat.id,
+                "❌ Не удалось загрузить информацию о подписке."
+            )
 
 
 # Кнопки админа
@@ -678,49 +723,7 @@ def menu_handler(message):
         return
 
     if text == "📦 Моя подписка":
-        try:
-            if not os.path.exists("users.json"):
-                bot.send_message(message.chat.id, "❌ Данные подписки не найдены.")
-                return
-
-            with open("users.json", "r", encoding="utf-8") as f:
-                users = json.load(f)
-
-            user_data = users.get(str(tg_id))
-
-            if not user_data:
-                bot.send_message(message.chat.id, "❌ Подписка не найдена.")
-                return
-
-            expiry_ms = user_data.get("expiry_time")
-            sub_id = user_data.get("sub_id")
-
-            if not expiry_ms or not sub_id:
-                bot.send_message(message.chat.id, "❌ Данные подписки неполные.")
-                return
-
-            expiry_date = datetime.datetime.fromtimestamp(
-                expiry_ms / 1000
-            ).strftime("%d.%m.%Y")
-
-            sub_link = f"{XUI_SUB_LINK}/{sub_id}"
-
-            bot.send_message(
-                message.chat.id,
-                "📦 <b>Ваша подписка</b>\n\n"
-                f"🔗 <b>Ссылка:</b>\n"
-                f"<code>{sub_link}</code>\n\n"
-                f"📅 <b>Действует до:</b> {expiry_date}\n\n"
-                "❤️ Спасибо, что вы с нами!",
-                parse_mode="HTML"
-            )
-
-        except Exception as e:
-            print(f"Ошибка получения подписки: {e}")
-            bot.send_message(
-                message.chat.id,
-                "❌ Не удалось загрузить информацию о подписке."
-            )
+        sub(tg_id)
     elif text == "🔄 Продлить подписку":
         uid = get_or_create_uid(tg_id)
         pending_requests[tg_id] = {
@@ -947,7 +950,7 @@ def admin_actions(call):
                     "Android: https://play.google.com/store/apps/details?id=com.v2raytun.android\n"
                     "IOS: https://apps.apple.com/kz/app/v2raytun/id6476628951\n\n"
                     "2. Для Windows, MAC и Linux, а так же другие клиенты на телефон и инструкции к ним можно посмотреть по этой ссылке:\n https://gist.github.com/kksudo/9e2072b3c60a72040f4e9d6fb9da7e9c\n\n"
-                    "2. Для Android и IOS следуйте видеоинструкции ниже. На IOS пропускаем часть с маршрутизацией приложений.\n\n"
+                    "3. Для Android и IOS следуйте видеоинструкции ниже. На IOS пропускаем часть с маршрутизацией приложений.\n\n"
                     f"Если будут вопросы — 👤 Напишите сюда: {SUPPORT}\n⏱ Мы ответим вам как можно скорее.",
                     parse_mode="HTML"
                 )
@@ -990,7 +993,8 @@ def admin_actions(call):
                 save_user(tg_id, uid, email, username, "approved", expiry_ms)
 
                 bot.send_message(call.message.chat.id, f"✅ Продление для {tg_id} успешно")
-                bot.send_message(tg_id, "🔄 Подписка продлена, с возвращением!", reply_markup=main_menu())
+                bot.send_message(tg_id, "🔄 Подписка продлена, с возвращением!")
+                bot.send_message(tg_id, sub(tg_id), reply_markup=main_menu())
 
                 pending_requests.pop(tg_id, None)
             else:
