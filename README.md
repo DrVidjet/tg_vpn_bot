@@ -16,7 +16,7 @@
 
 Указываем API бота, данные для оплаты и данные 3x-ui
 
-`sudo apt install python3 python3.11-venv`
+`sudo apt install python3 python3.12-venv`
 
 `python3 -m venv .venv`
 

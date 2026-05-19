@@ -43,7 +43,7 @@ pending_requests = {}
 user_ids = {}
 blocked_users = set()
 approved_users = set()
-LOCK_FILE = "/tmp/tg_vpn_bot.lock"
+LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bot.lock')
 uid_counter = 1
 
 # ====================== ФУНКЦИИ ======================
