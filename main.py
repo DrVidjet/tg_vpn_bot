@@ -559,7 +559,8 @@ def send_admin_request_by_tg_id(tg_id, uid):
     flow = data.get("flow", "new")
 
     markup = admin_keyboard(tg_id)
-    months = pending_requests.get(tg_id, {}).get("months", 1)
+    data = pending_requests.get(tg_id, {})
+    months = data.get("months", renewal_data.get(tg_id, 1))
     price = 150 * months
     bot.send_message(
         ADMIN_ID,
@@ -719,8 +720,12 @@ def menu_handler(message):
         return
 
     if tg_id in pending_requests and text != "📩 Поддержка":
-        bot.send_message(message.chat.id, "🕚 Жду подтверждения")
-        return
+        flow = pending_requests[tg_id].get("flow")
+
+        # блокируем только "новую оплату", но не поддержку и не подписку
+        if flow == "new":
+            bot.send_message(message.chat.id, "🕚 Жду подтверждения оплаты")
+            return
 
     if text == "📦 Моя подписка":
         sub(tg_id, message)
@@ -760,11 +765,9 @@ def handle_paid(call):
     uid = get_or_create_uid(tg_id)
 
     # Обновляем/дополняем данные перед отправкой админу
-    pending_requests[tg_id] = {
-        "id": uid,
-        "username": data.get("username"),
-        "flow": flow
-    }
+    pending_requests[tg_id]["id"] = uid
+    pending_requests[tg_id]["username"] = data.get("username")
+    pending_requests[tg_id]["flow"] = flow
 
     send_admin_request_by_tg_id(tg_id, uid)
 
