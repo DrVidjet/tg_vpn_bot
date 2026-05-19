@@ -256,35 +256,42 @@ def get_nodes():
     return []
 
 # Получение метрик с нод
-def probe_nodes(node_id):
+def get_node_cpu(node_id):
     try:
         r = requests.get(
-            f"{XUI_URL}/panel/api/nodes/list",
+            f"{XUI_URL}/panel/api/nodes/history/{node_id}/cpu/60",
             headers=headers,
-            timeout=15
+            timeout=10
         )
-        if not (r.status_code == 200 and r.json().get("success")):
-            return
+        if r.status_code == 200 and r.json().get("success"):
+            data = r.json().get("obj", [])
+            if data:
+                return data[-1].get("value", None)
+    except:
+        pass
+    return None
 
-        nodes = r.json().get("obj", [])
-
-        for node in nodes:
-            node_id = node.get("id")
-            if node_id:
-                requests.post(
-                    f"{XUI_URL}/panel/api/nodes/probe/{node_id}",
-                    headers=headers,
-                    timeout=10
-                )
-    except Exception as e:
-        print(f"Probe error: {e}")
+def get_node_mem(node_id):
+    try:
+        r = requests.get(
+            f"{XUI_URL}/panel/api/nodes/history/{node_id}/mem/60",
+            headers=headers,
+            timeout=10
+        )
+        if r.status_code == 200 and r.json().get("success"):
+            data = r.json().get("obj", [])
+            if data:
+                return data[-1].get("value", None)
+    except:
+        pass
+    return None
 
 # Получение статуса серверов
 def get_servers_status():
 
     text = "🖥 Статус серверов\n\n"
 
-    # ================= CENTRAL =================
+    # CENTRAL
     try:
         r = requests.get(
             f"{XUI_URL}/panel/api/server/status",
@@ -303,58 +310,31 @@ def get_servers_status():
                 f"TCP: {s['tcpCount']}\n"
                 f"XRAY: {s['xray']['state']}\n\n"
             )
-        else:
-            text += "🌐 CENTRAL\n❌ No data\n\n"
-
     except Exception as e:
         text += f"CENTRAL ERROR: {e}\n\n"
 
-    # ================= NODES =================
-    try:
-        nodes = get_nodes()
+    # NODES
+    nodes = get_nodes()
 
-        if not nodes:
-            return text + "❌ No nodes found\n"
+    text += "🖥 NODES\n\n"
 
-        # 🔥 пробуем обновить метрики
-        for node in nodes:
-            node_id = node.get("id")
-            if node_id:
-                probe_nodes(node_id)
+    for node in nodes:
+        node_id = node.get("id")
 
-        # 🔥 небольшой буфер чтобы метрики обновились
-        import time
-        time.sleep(1)
+        cpu = get_node_cpu(node_id)
+        mem = get_node_mem(node_id)
 
-        # 🔥 повторный fetch уже с обновлёнными данными
-        nodes = get_nodes()
+        status = node.get("status", "unknown")
 
-        text += "🖥 NODES\n\n"
+        cpu_str = f"{round(cpu, 1)}%" if cpu is not None else "N/A"
+        mem_str = f"{round(mem, 1)}%" if mem is not None else "N/A"
 
-        for node in nodes:
-
-            status = node.get("status", "unknown")
-            cpu = node.get("cpu")
-            mem = node.get("mem")
-
-            # fallback если всё ещё 0
-            cpu_str = f"{cpu}%" if cpu is not None else "N/A"
-            mem_str = f"{mem}%" if mem is not None else "N/A"
-
-            # если всё нули → считаем что метрика не пришла
-            if cpu == 0 and mem == 0:
-                cpu_str = "—"
-                mem_str = "—"
-
-            text += (
-                f"🖥 {node.get('name', 'unknown')}\n"
-                f"STATUS: {'🟢' if status == 'online' else '🔴'}\n"
-                f"CPU: {cpu_str}\n"
-                f"MEM: {mem_str}\n\n"
-            )
-
-    except Exception as e:
-        text += f"NODES ERROR: {e}\n"
+        text += (
+            f"🖥 {node.get('name')}\n"
+            f"STATUS: {'🟢' if status == 'online' else '🔴'}\n"
+            f"CPU: {cpu_str}\n"
+            f"MEM: {mem_str}\n\n"
+        )
 
     return text
 
