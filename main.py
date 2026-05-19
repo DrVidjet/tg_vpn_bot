@@ -40,6 +40,7 @@ bot = telebot.TeleBot(API_TOKEN)
 
 # ====================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ======================
 pending_requests = {}
+renewal_data = {}
 user_ids = {}
 blocked_users = set()
 approved_users = set()
@@ -99,12 +100,12 @@ def create_vpn_client(tg_id: int, username: str = None):
         return False, f"Успешно {success_count}/{len(XUI_INBOUND_IDS)} inbound'ов", base_name, expiry_ms
 
 # Продление клиента
-def renew_vpn_client(tg_id: int, username: str = None):
+def renew_vpn_client(tg_id: int, username: str = None, months: int = 1):
     """Продлевает подписку во всех inbound'ах"""
     try:
         with open("users.json", "r", encoding="utf-8") as f:
             users = json.load(f)
-
+        extra_days = XUI_EXPIRY_DAYS * months
         user_data = users.get(str(tg_id))
         if not user_data or not user_data.get("email"):
             return False, "Email пользователя не найден в users.json", None, None
@@ -136,7 +137,7 @@ def renew_vpn_client(tg_id: int, username: str = None):
                     current_expiry = client.get("expiryTime", 0)
 
                     base_time = current_expiry if current_expiry > now_ms else now_ms
-                    new_expiry = base_time + (XUI_EXPIRY_DAYS * 24 * 60 * 60 * 1000)
+                    new_expiry = base_time + (extra_days * 24 * 60 * 60 * 1000)
 
                     client["expiryTime"] = new_expiry
 
@@ -445,6 +446,32 @@ def show_payment_methods(chat_id):
 
     bot.send_message(chat_id, "💰 Выберите способ оплаты:", reply_markup=markup)
 
+# Обработка продления на несколько месяцев
+def process_months_input(message, tg_id):
+    try:
+        months = int(message.text.strip())
+        if months <= 0 or months > 36:
+            return bot.send_message(message.chat.id, "Введите корректное число месяцев (1–36)")
+
+        renewal_data[tg_id] = months
+        pending_requests[tg_id]["months"] = months
+
+        price = 150 * months
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("💳 Перейти к оплате", callback_data=f"renew_pay:{tg_id}"))
+
+        bot.send_message(
+            message.chat.id,
+            f"💰 Итоговая сумма: {price}₽\n📅 Месяцев: {months}",
+            reply_markup=markup
+        )
+
+    except:
+        bot.send_message(message.chat.id, "Введите число")
+
+
+
 # Кнопки админа
 def admin_keyboard(tg_id):
     markup = types.InlineKeyboardMarkup(row_width=1)
@@ -471,14 +498,15 @@ def send_admin_request_by_tg_id(tg_id, uid):
     flow = data.get("flow", "new")
 
     markup = admin_keyboard(tg_id)
-
+    months = pending_requests.get(tg_id, {}).get("months", 1)
+    price = 150 * months
     bot.send_message(
         ADMIN_ID,
         f"💰 Новая оплата\n\n"
         f"Пользователь: {user_link}\n"
         f"ID: {uid}\n"
         f"Тип: {'Продление' if flow == 'renew' else 'Новая подписка'}\n"
-        f"Сумма: 150₽",
+        f"Сумма: {price}₽ ({months} мес)",
         reply_markup=markup,
     )
 
@@ -682,7 +710,18 @@ def menu_handler(message):
             "username": message.from_user.username,
             "flow": "renew"
         }
-        show_payment_methods(tg_id)
+
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(
+            types.InlineKeyboardButton("📅 На 1 месяц — 150₽", callback_data=f"renew:1:{tg_id}"),
+            types.InlineKeyboardButton("📅 На несколько месяцев", callback_data=f"renew:multi:{tg_id}")
+        )
+
+        bot.send_message(
+            message.chat.id,
+            "🔄 Выберите срок продления:",
+            reply_markup=markup
+        )
     elif text == "📩 Поддержка":
         bot.send_message(message.chat.id, support_contact())
 
@@ -714,6 +753,32 @@ def handle_paid(call):
         f"Сумма: 150₽"
     )
     bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("renew:"))
+def handle_renew_choice(call):
+    _, mode, tg_id_str = call.data.split(":")
+    tg_id = int(tg_id_str)
+
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+    if mode == "1":
+        months = 1
+        renewal_data[tg_id] = months
+
+        pending_requests[tg_id]["months"] = months
+
+        show_payment_methods(tg_id)
+        bot.answer_callback_query(call.id)
+        return
+
+    if mode == "multi":
+        msg = bot.send_message(call.message.chat.id, "📅 Введите количество месяцев (число):")
+
+        bot.register_next_step_handler(msg, process_months_input, tg_id)
+        bot.answer_callback_query(call.id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("choose_method:"))
 def handle_choose_method(call):
@@ -770,6 +835,25 @@ def handle_choose_method(call):
             caption=f"📱 СБП\n💰 К оплате: 150₽\n\n{sbp_url}\n\nПосле оплаты нажмите кнопку ниже.",
             reply_markup=markup
         )
+
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("renew_pay:"))
+def handle_renew_pay(call):
+    tg_id = int(call.data.split(":")[1])
+
+    months = renewal_data.get(tg_id, 1)
+    price = 150 * months
+
+    pending_requests[tg_id]["months"] = months
+    pending_requests[tg_id]["amount"] = price
+
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+    show_payment_methods(call.message.chat.id)
 
     bot.answer_callback_query(call.id)
 
@@ -864,7 +948,8 @@ def admin_actions(call):
 
         else:
             # === ПРОДЛЕНИЕ ===
-            success, error_msg, email, expiry_ms = renew_vpn_client(tg_id, username)
+            months = pending_requests.get(tg_id, {}).get("months", 1)
+            success, error_msg, email, expiry_ms = renew_vpn_client(tg_id, username, months)
             if success:
                 approved_users.add(tg_id)
                 save_user(tg_id, uid, email, username, "approved", expiry_ms)
