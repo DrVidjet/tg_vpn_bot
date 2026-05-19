@@ -1,16 +1,16 @@
 [DEFAULT]
 # ================== TG ==================
-ADMIN_ID = 1336949347
-API = "8619379379:AAHOwMD68rnrfcrrRkiNSU9N8_cqlEBLlhQ"
+ADMIN_ID = 00000000000
+API = ""
 
 # ================== Payment ==================
-TCARD_NUMBER="5536 9141 6529 4673"
-SCARD_NUMBER="2202 2050 3109 2643"
-ACARD_NUMBER="2200 1509 8343 2128"
-SBP_URL="https://t.tb.ru/c2c-qr-choose-bank?requisiteNumber=+79033342848&bankCode=100000000004"
+TCARD_NUMBER="0000 0000 0000 0000"
+SCARD_NUMBER="0000 0000 0000 0000"
+ACARD_NUMBER="0000 0000 0000 0000"
+SBP_URL="https://example.com/sbp"
 
 # ================== X-UI / 3x-ui ==================
-XUI_URL = ""
+XUI_URL = "https://example.com/asdgd/panel"
 XUI_API_TOKEN = ""
-XUI_INBOUND_ID = 1
-XUI_EXPIRY_DAYS = 31
+XUI_INBOUND_IDS = 1,2,3
+XUI_EXPIRY_DAYS = 30
