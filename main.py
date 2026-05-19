@@ -525,12 +525,12 @@ def sub(tg_id):
                 parse_mode="HTML"
             )
 
-        except Exception as e:
-            print(f"Ошибка получения подписки: {e}")
-            bot.send_message(
-                message.chat.id,
-                "❌ Не удалось загрузить информацию о подписке."
-            )
+    except Exception as e:
+        print(f"Ошибка получения подписки: {e}")
+        bot.send_message(
+            message.chat.id,
+            "❌ Не удалось загрузить информацию о подписке."
+        )
 
 
 # Кнопки админа
