@@ -256,7 +256,7 @@ def get_nodes():
     return []
 
 # Получение метрик с нод
-def probe_nodes():
+def probe_nodes(node_id):
     try:
         r = requests.get(
             f"{XUI_URL}/panel/api/nodes/list",
