@@ -725,7 +725,7 @@ def menu_handler(message):
         pending_requests[tg_id] = {
             "id": uid,
             "username": message.from_user.username,
-            "flow": "renew"
+            "flow": "renew",
             "months": moths
         }
 
