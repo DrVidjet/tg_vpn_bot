@@ -241,15 +241,51 @@ def process_delete_user(message):
     else:
         bot.send_message(message.chat.id, f"❌ {msg}")
 
+# Получение нод
+def get_nodes():
+    try:
+        r = requests.get(
+            f"{XUI_URL}/panel/api/nodes/list",
+            headers=headers,
+            timeout=15
+        )
+        if r.status_code == 200 and r.json().get("success"):
+            return r.json().get("obj", [])
+    except Exception as e:
+        print(f"Nodes fetch error: {e}")
+    return []
+
+# Получение метрик с нод
+def probe_nodes():
+    try:
+        r = requests.get(
+            f"{XUI_URL}/panel/api/nodes/list",
+            headers=headers,
+            timeout=15
+        )
+        if not (r.status_code == 200 and r.json().get("success")):
+            return
+
+        nodes = r.json().get("obj", [])
+
+        for node in nodes:
+            node_id = node.get("id")
+            if node_id:
+                requests.post(
+                    f"{XUI_URL}/panel/api/nodes/probe/{node_id}",
+                    headers=headers,
+                    timeout=10
+                )
+    except Exception as e:
+        print(f"Probe error: {e}")
+
 # Получение статуса серверов
 def get_servers_status():
 
     text = "🖥 Статус серверов\n\n"
 
-    # CENTRAL
-
+    # ================= CENTRAL =================
     try:
-
         r = requests.get(
             f"{XUI_URL}/panel/api/server/status",
             headers=headers,
@@ -257,7 +293,6 @@ def get_servers_status():
         )
 
         if r.status_code == 200 and r.json().get("success"):
-
             s = r.json()["obj"]
 
             text += (
@@ -268,32 +303,55 @@ def get_servers_status():
                 f"TCP: {s['tcpCount']}\n"
                 f"XRAY: {s['xray']['state']}\n\n"
             )
+        else:
+            text += "🌐 CENTRAL\n❌ No data\n\n"
 
     except Exception as e:
         text += f"CENTRAL ERROR: {e}\n\n"
 
-    # NODES
-
+    # ================= NODES =================
     try:
+        nodes = get_nodes()
 
-        r = requests.get(
-            f"{XUI_URL}/panel/api/nodes/list",
-            headers=headers,
-            timeout=15
-        )
+        if not nodes:
+            return text + "❌ No nodes found\n"
 
-        if r.status_code == 200 and r.json().get("success"):
+        # 🔥 пробуем обновить метрики
+        for node in nodes:
+            node_id = node.get("id")
+            if node_id:
+                probe_node(node_id)
 
-            nodes = r.json()["obj"]
+        # 🔥 небольшой буфер чтобы метрики обновились
+        import time
+        time.sleep(1)
 
-            for node in nodes:
+        # 🔥 повторный fetch уже с обновлёнными данными
+        nodes = get_nodes()
 
-                text += (
-                    f"🖥 {node['name']}\n"
-                    f"STATUS: {'🟢' if node['status'] == 'online' else '🔴'}\n"
-                    f"CPU: {node.get('cpu', 0)}%\n"
-                    f"MEM: {node.get('mem', 0)}%\n\n"
-                )
+        text += "🖥 NODES\n\n"
+
+        for node in nodes:
+
+            status = node.get("status", "unknown")
+            cpu = node.get("cpu")
+            mem = node.get("mem")
+
+            # fallback если всё ещё 0
+            cpu_str = f"{cpu}%" if cpu is not None else "N/A"
+            mem_str = f"{mem}%" if mem is not None else "N/A"
+
+            # если всё нули → считаем что метрика не пришла
+            if cpu == 0 and mem == 0:
+                cpu_str = "—"
+                mem_str = "—"
+
+            text += (
+                f"🖥 {node.get('name', 'unknown')}\n"
+                f"STATUS: {'🟢' if status == 'online' else '🔴'}\n"
+                f"CPU: {cpu_str}\n"
+                f"MEM: {mem_str}\n\n"
+            )
 
     except Exception as e:
         text += f"NODES ERROR: {e}\n"
