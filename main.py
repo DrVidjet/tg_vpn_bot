@@ -908,7 +908,7 @@ def admin_actions(call):
 @bot.message_handler(commands=['admin'])
 def admin_handler(message):
 
-    if not is_admin(call.from_user.id):
+    if not is_admin(message.from_user.id):
         return
 
     bot.send_message(
@@ -922,7 +922,7 @@ def admin_handler(message):
     m.text == "👥 Пользователи"
 )
 def show_users(message):
-    if not is_admin(call.from_user.id):
+    if not is_admin(message.from_user.id):
         return
     if not os.path.exists("users.json"):
         return bot.send_message(message.chat.id, "users.json not found")
@@ -981,7 +981,7 @@ def show_users(message):
     m.text == "🗑 Удалить пользователя"
 )
 def ask_delete_user(message):
-    if not is_admin(call.from_user.id):
+    if not is_admin(message.from_user.id):
         return
     msg = bot.send_message(
         message.chat.id,
@@ -995,7 +995,7 @@ def ask_delete_user(message):
     m.text == "🖥 Статус серверов"
 )
 def servers_status(message):
-    if not is_admin(call.from_user.id):
+    if not is_admin(message.from_user.id):
         return
     bot.send_message(
         message.chat.id,
