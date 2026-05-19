@@ -320,7 +320,7 @@ def get_servers_status():
         for node in nodes:
             node_id = node.get("id")
             if node_id:
-                probe_node(node_id)
+                probe_nodes(node_id)
 
         # 🔥 небольшой буфер чтобы метрики обновились
         import time
