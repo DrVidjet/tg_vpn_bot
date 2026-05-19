@@ -171,6 +171,134 @@ def renew_vpn_client(tg_id: int, username: str = None):
         print(f"❌ Ошибка продления: {e}")
         return False, str(e), None, None
 
+# Удаление клиента
+def delete_vpn_user(tg_id):
+
+    if not os.path.exists("users.json"):
+        return False, "users.json not found"
+
+    with open("users.json", "r", encoding="utf-8") as f:
+        users = json.load(f)
+
+    user = users.get(str(tg_id))
+
+    if not user:
+        return False, "User not found"
+
+    base_email = user.get("email")
+
+    if not base_email:
+        return False, "Email not found"
+
+    deleted = 0
+
+    for inbound_id in XUI_INBOUND_IDS:
+
+        email = f"{base_email}@inbound{inbound_id}"
+
+        try:
+
+            r = requests.post(
+                f"{XUI_URL}/panel/api/inbounds/{inbound_id}/delClientByEmail/{email}",
+                headers=headers,
+                timeout=15
+            )
+
+            if r.status_code == 200 and r.json().get("success"):
+                deleted += 1
+
+        except Exception as e:
+            print(f"Delete error: {e}")
+
+    # удаляем локально
+    del users[str(tg_id)]
+
+    with open("users.json", "w", encoding="utf-8") as f:
+        json.dump(users, f, ensure_ascii=False, indent=4)
+
+    blocked_users.discard(tg_id)
+    approved_users.discard(tg_id)
+    pending_requests.pop(tg_id, None)
+
+    return True, f"Удалено inbound'ов: {deleted}/{len(XUI_INBOUND_IDS)}"
+
+# Обработчик удаления
+def process_delete_user(message):
+
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    try:
+        tg_id = int(message.text.strip())
+    except:
+        return bot.send_message(message.chat.id, "Неверный TG_ID")
+
+    success, msg = delete_vpn_user(tg_id)
+
+    if success:
+        bot.send_message(message.chat.id, f"✅ {msg}")
+    else:
+        bot.send_message(message.chat.id, f"❌ {msg}")
+
+# Получение статуса серверов
+def get_servers_status():
+
+    text = "🖥 Статус серверов\n\n"
+
+    # CENTRAL
+
+    try:
+
+        r = requests.get(
+            f"{XUI_URL}/panel/api/server/status",
+            headers=headers,
+            timeout=15
+        )
+
+        if r.status_code == 200 and r.json().get("success"):
+
+            s = r.json()["obj"]
+
+            text += (
+                "🌐 CENTRAL\n"
+                f"CPU: {s['cpu']}%\n"
+                f"RAM: {round(s['mem']['current']/1024**3, 2)} / "
+                f"{round(s['mem']['total']/1024**3, 2)} GB\n"
+                f"TCP: {s['tcpCount']}\n"
+                f"XRAY: {s['xray']['state']}\n\n"
+            )
+
+    except Exception as e:
+        text += f"CENTRAL ERROR: {e}\n\n"
+
+    # NODES
+
+    try:
+
+        r = requests.get(
+            f"{XUI_URL}/panel/api/nodes/list",
+            headers=headers,
+            timeout=15
+        )
+
+        if r.status_code == 200 and r.json().get("success"):
+
+            nodes = r.json()["obj"]
+
+            for node in nodes:
+
+                text += (
+                    f"🖥 {node['name']}\n"
+                    f"STATUS: {'🟢' if node['status'] == 'online' else '🔴'}\n"
+                    f"CPU: {node.get('cpu', 0)}%\n"
+                    f"MEM: {node.get('mem', 0)}%\n\n"
+                )
+
+    except Exception as e:
+        text += f"NODES ERROR: {e}\n"
+
+    return text
+
 # Генерация QR из ссылки
 def generate_qr_image(url: str):
     qr = qrcode.QRCode(box_size=10, border=2)
@@ -266,7 +394,6 @@ def save_user(tg_id, uid, email=None, username=None, status="approved", expiry_t
     key = str(tg_id)
 
     if key in data:
-        # Обновление
         current = data[key]
         if expiry_time:
             current["expiry_time"] = expiry_time
@@ -301,10 +428,6 @@ def get_user_link(tg_id, username):
     else:
         return f"tg://user?id={tg_id}"
 
-# Контакт поддержки
-def support_contact():
-    return f"📩 Поддержка\n👤 Напишите сюда: {SUPPORT}\n\n⏱ Мы ответим вам как можно скорее."
-
 # Главное меню пользователя
 def main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -330,6 +453,16 @@ def admin_keyboard(tg_id):
     markup.add(types.InlineKeyboardButton("🚫 Заблокировать", callback_data=f"block:{tg_id}"))
     return markup
 
+# Главное меню админа
+def admin_panel():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+
+    markup.add("👥 Пользователи")
+    markup.add("🗑 Удалить пользователя")
+    markup.add("🖥 Статус серверов")
+
+    return markup
+
 # Функция запроса доступа у админа
 def send_admin_request_by_tg_id(tg_id, uid):
     data = pending_requests.get(tg_id, {})
@@ -348,6 +481,57 @@ def send_admin_request_by_tg_id(tg_id, uid):
         f"Сумма: 150₽",
         reply_markup=markup,
     )
+
+# Запрос онлайн клиентов у сервера
+def get_online_clients():
+
+    try:
+        r = requests.post(
+            f"{XUI_URL}/panel/api/inbounds/onlines",
+            headers=headers,
+            timeout=15
+        )
+
+        if r.status_code == 200 and r.json().get("success"):
+            return set(r.json().get("obj", []))
+
+    except Exception as e:
+        print(f"Online error: {e}")
+
+    return set()
+
+# Запрос трафика по клиентам
+def get_user_traffic(base_email):
+
+    total_up = 0
+    total_down = 0
+
+    for inbound_id in XUI_INBOUND_IDS:
+
+        email = f"{base_email}@inbound{inbound_id}"
+
+        try:
+            r = requests.get(
+                f"{XUI_URL}/panel/api/inbounds/getClientTraffics/{email}",
+                headers=headers,
+                timeout=15
+            )
+
+            if r.status_code == 200 and r.json().get("success"):
+
+                obj = r.json().get("obj", {})
+
+                total_up += obj.get("up", 0)
+                total_down += obj.get("down", 0)
+
+        except Exception as e:
+            print(f"Traffic error: {e}")
+
+    return total_up, total_down
+
+# Проверка на админа
+def is_admin(user_id):
+    return user_id == ADMIN_ID
 
 # ====================== ХЭНДЛЕРЫ ======================
 
@@ -481,7 +665,7 @@ def menu_handler(message):
                 f"🔗 <b>Ссылка:</b>\n"
                 f"<code>{sub_link}</code>\n\n"
                 f"📅 <b>Действует до:</b> {expiry_date}\n\n"
-                "❤️ Спасибо, что вы с нами <3",
+                "❤️ Спасибо, что вы с нами!",
                 parse_mode="HTML"
             )
 
@@ -606,6 +790,9 @@ def admin_actions(call):
     action, tg_id_str = call.data.split(":")
     tg_id = int(tg_id_str)
 
+    if not is_admin(call.from_user.id):
+        return
+
     # Если заявки уже нет
     if tg_id not in pending_requests:
         if action == "approve":
@@ -717,6 +904,103 @@ def admin_actions(call):
         pending_requests.pop(tg_id, None)
 
     bot.answer_callback_query(call.id)
+
+@bot.message_handler(commands=['admin'])
+def admin_handler(message):
+
+    if not is_admin(call.from_user.id):
+        return
+
+    bot.send_message(
+        message.chat.id,
+        "⚙️ Админ-панель",
+        reply_markup=admin_panel()
+    )
+
+@bot.message_handler(func=lambda m:
+    m.from_user.id == ADMIN_ID and
+    m.text == "👥 Пользователи"
+)
+def show_users(message):
+    if not is_admin(call.from_user.id):
+        return
+    if not os.path.exists("users.json"):
+        return bot.send_message(message.chat.id, "users.json not found")
+
+    with open("users.json", "r", encoding="utf-8") as f:
+        users = json.load(f)
+
+    online_clients = get_online_clients()
+
+    result = "👥 Пользователи:\n\n"
+
+    for tg_id, info in users.items():
+
+        username = info.get("username", "no_username")
+        uid = info.get("uid", "-")
+        status = info.get("status", "unknown")
+        expiry = info.get("expiry_time", 0)
+        email = info.get("email")
+
+        expiry_date = datetime.datetime.fromtimestamp(
+            expiry / 1000
+        ).strftime("%d.%m.%Y")
+
+        online = False
+
+        if email:
+            for inbound_id in XUI_INBOUND_IDS:
+
+                check_email = f"{email}@inbound{inbound_id}"
+
+                if check_email in online_clients:
+                    online = True
+                    break
+
+        up, down = get_user_traffic(email)
+
+        up_gb = round(up / (1024**3), 2)
+        down_gb = round(down / (1024**3), 2)
+
+        result += (
+            f"UID: {uid}\n"
+            f"TG_ID: {tg_id}\n"
+            f"USER: @{username}\n"
+            f"STATUS: {status}\n"
+            f"ONLINE: {'🟢' if online else '🔴'}\n"
+            f"UP: {up_gb} GB\n"
+            f"DOWN: {down_gb} GB\n"
+            f"EXPIRE: {expiry_date}\n\n"
+        )
+
+    for i in range(0, len(result), 4000):
+        bot.send_message(message.chat.id, result[i:i+4000])
+
+@bot.message_handler(func=lambda m:
+    m.from_user.id == ADMIN_ID and
+    m.text == "🗑 Удалить пользователя"
+)
+def ask_delete_user(message):
+    if not is_admin(call.from_user.id):
+        return
+    msg = bot.send_message(
+        message.chat.id,
+        "Введите TG_ID:"
+    )
+
+    bot.register_next_step_handler(msg, process_delete_user)
+
+@bot.message_handler(func=lambda m:
+    m.from_user.id == ADMIN_ID and
+    m.text == "🖥 Статус серверов"
+)
+def servers_status(message):
+    if not is_admin(call.from_user.id):
+        return
+    bot.send_message(
+        message.chat.id,
+        get_servers_status()
+    )
 
 # ====================== ЗАПУСК ======================
 if __name__ == '__main__':
