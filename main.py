@@ -721,10 +721,12 @@ def menu_handler(message):
             )
     elif text == "🔄 Продлить подписку":
         uid = get_or_create_uid(tg_id)
+        moths = 1
         pending_requests[tg_id] = {
             "id": uid,
             "username": message.from_user.username,
             "flow": "renew"
+            "months": moths
         }
 
         markup = types.InlineKeyboardMarkup(row_width=1)
@@ -766,7 +768,6 @@ def handle_paid(call):
     bot.send_message(
         tg_id,
         f"⏳ Заявка отправлена на проверку оплаты.\n"
-        f"Сумма: {get_amount(tg_id)}₽"
     )
     bot.answer_callback_query(call.id)
 
