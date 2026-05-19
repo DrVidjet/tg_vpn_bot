@@ -487,7 +487,7 @@ def process_months_input(message, tg_id):
         bot.send_message(message.chat.id, "Введите число")
 
 # Информация о подписке
-sub(tg_id):
+def sub(tg_id):
     try:
             if not os.path.exists("users.json"):
                 bot.send_message(message.chat.id, "❌ Данные подписки не найдены.")
