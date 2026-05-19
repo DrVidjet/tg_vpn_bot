@@ -994,7 +994,7 @@ def admin_actions(call):
 
                 bot.send_message(call.message.chat.id, f"✅ Продление для {tg_id} успешно")
                 bot.send_message(tg_id, "🔄 Подписка продлена, с возвращением!")
-                bot.send_message(tg_id, sub(tg_id, message), reply_markup=main_menu())
+                bot.send_message(tg_id, sub(tg_id, call.message), reply_markup=main_menu())
 
                 pending_requests.pop(tg_id, None)
             else:
