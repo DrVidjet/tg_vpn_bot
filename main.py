@@ -239,9 +239,8 @@ def get_or_create_uid(tg_id):
     return uid
 
 # Сохранение нового пользователя в файл
-def save_user(tg_id, uid, email=None, username=None, status="approved",
-              subscriptions=1, expiry_time=None):
-    """Сохраняет/обновляет пользователя"""
+def save_user(tg_id, uid, email=None, username=None, status="approved", expiry_time=None):
+    """Сохраняет/обновляет пользователя (1 подписка)"""
     if os.path.exists("users.json"):
         with open("users.json", "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -251,17 +250,15 @@ def save_user(tg_id, uid, email=None, username=None, status="approved",
     key = str(tg_id)
 
     if key in data:
-        # Обновление существующего пользователя
+        # Обновление
         current = data[key]
-        current["subscriptions"] = max(current.get("subscriptions", 1), subscriptions)
         if expiry_time:
             current["expiry_time"] = expiry_time
         if email:
             current["email"] = email
         if username and username != "no_username":
             current["username"] = username
-        if status:
-            current["status"] = status
+        current["status"] = status
     else:
         # Новый пользователь
         if expiry_time is None:
@@ -272,36 +269,12 @@ def save_user(tg_id, uid, email=None, username=None, status="approved",
             "email": email,
             "username": username or "no_username",
             "status": status,
-            "subscriptions": subscriptions,
+            "subscriptions": 1,
             "expiry_time": expiry_time
         }
 
     with open("users.json", "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
-
-# Выбор кол-ва подписок
-def ask_subscription_count(chat_id, is_renew=False, current_count=1):
-    if is_renew:
-        word = get_subscription_word(current_count)
-        text = f"🔄 <b>Продление подписки</b>\n\n" \
-               f"У вас сейчас <b>{current_count}</b> {word}.\n\n" \
-               f"Сколько хотите продлить?"
-        max_count = current_count
-    else:
-        text = "🛒 <b>Сколько устройств хотите подключить?</b>\n\n" \
-               "💰 <b>Цены:</b>\n" \
-               "• 1 подписка — <b>150₽</b>\n" \
-               "• 2 и более — <b>150₽</b> за первую + <b>100₽</b> за каждую следующую\n\n" \
-               "🔹 1 подписка = 1 устройство"
-        max_count = 6
-
-    markup = types.InlineKeyboardMarkup(row_width=3)
-    buttons = []
-    for i in range(1, max_count + 1):
-        buttons.append(types.InlineKeyboardButton(str(i), callback_data=f"count:{i}:{'renew' if is_renew else 'new'}"))
-
-    markup.add(*buttons)
-    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
 # Получение tg ссылки на пользователя
 def get_user_link(tg_id, username):
@@ -346,8 +319,6 @@ def send_admin_request_by_tg_id(tg_id, uid):
     username = data.get("username") or "no_username"
     user_link = get_user_link(tg_id, username)
     flow = data.get("flow", "new")
-    count = data.get("count", 1)
-    amount = data.get("amount", 150)
 
     markup = admin_keyboard(tg_id)
 
@@ -357,17 +328,9 @@ def send_admin_request_by_tg_id(tg_id, uid):
         f"Пользователь: {user_link}\n"
         f"ID: {uid}\n"
         f"Тип: {'Продление' if flow == 'renew' else 'Новая подписка'}\n"
-        f"Подписок: {count}\n"
-        f"Сумма: {amount}₽",
+        f"Сумма: 150₽",
         reply_markup=markup,
     )
-
-# Функция подсчета стоимости подписок
-def calculate_price(count: int, current_count: int = 0):
-    if count == 1:
-        return 150
-    else:
-        return 150 + (count - 1) * 100
 
 # Получаем подписки пользователя
 def get_user_subscriptions(tg_id):
@@ -451,11 +414,12 @@ def handle_offer_response(call):
     pending_requests[tg_id] = {
         "id": uid,
         "username": call.from_user.username,
-        "flow": "new"
+        "flow": "new",
+        "amount": 150
     }
 
     bot.answer_callback_query(call.id)
-    ask_subscription_count(tg_id, is_renew=False)
+    show_payment_methods(tg_id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("count:"))
 def handle_count_selection(call):
@@ -504,30 +468,14 @@ def menu_handler(message):
     if text == "📦 Моя подписка":
         bot.send_message(message.chat.id, "📦 Ваша подписка (в разработке)")
     elif text == "🔄 Продлить подписку":
-        current_count = get_user_subscriptions(tg_id)
-        if current_count == 0:
-            bot.send_message(tg_id, "У вас пока нет активных подписок.")
-            return
-
         uid = get_or_create_uid(tg_id)
         pending_requests[tg_id] = {
             "id": uid,
             "username": message.from_user.username,
-            "flow": "renew"
+            "flow": "renew",
+            "amount": 150
         }
-        ask_subscription_count(tg_id, is_renew=True, current_count=current_count)
-    elif text == "🛒 Купить ещё подписки":
-        if tg_id not in approved_users:
-            bot.send_message(tg_id, "Сначала нужно иметь хотя бы одну активную подписку.")
-            return
-
-        uid = get_or_create_uid(tg_id)
-        pending_requests[tg_id] = {
-            "id": uid,
-            "username": message.from_user.username,
-            "flow": "new"   # считаем как докупку = новая подписка
-        }
-        ask_subscription_count(tg_id, is_renew=False)
+        show_payment_methods(tg_id)
     elif text == "📩 Поддержка":
         bot.send_message(message.chat.id, support_contact())
 
