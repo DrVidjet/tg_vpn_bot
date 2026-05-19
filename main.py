@@ -721,12 +721,10 @@ def menu_handler(message):
             )
     elif text == "🔄 Продлить подписку":
         uid = get_or_create_uid(tg_id)
-        moths = 1
         pending_requests[tg_id] = {
             "id": uid,
             "username": message.from_user.username,
-            "flow": "renew",
-            "months": moths
+            "flow": "renew"
         }
 
         markup = types.InlineKeyboardMarkup(row_width=1)
