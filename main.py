@@ -133,15 +133,11 @@ def renew_vpn_client(tg_id: int, username: str = None, months: int = 1):
 
             for client in clients:
                 if client.get("email") == search_email:
-                    DAY_MS = 24 * 60 * 60 * 1000
-
-                    now_ms = int(datetime.datetime.utcnow().timestamp() * 1000)
-
+                    now_ms = int(datetime.datetime.now().timestamp() * 1000)
                     current_expiry = client.get("expiryTime", 0)
 
-                    base_time = max(current_expiry, now_ms)
-
-                    new_expiry = base_time + (months * XUI_EXPIRY_DAYS * DAY_MS)
+                    base_time = current_expiry if current_expiry > now_ms else now_ms
+                    new_expiry = base_time + (extra_days * 24 * 60 * 60 * 1000)
 
                     client["expiryTime"] = new_expiry
 
