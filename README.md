@@ -65,3 +65,11 @@ WantedBy=multi-user.target
 `sudo systemctl enable --now tg_vpn_bot`
 
 `sudo systemctl status tg_vpn_bot`
+
+`git config --global --add safe.directory /opt/tg_vpn_bot`
+
+## Обновление
+
+`cd /opt/tg_vpn_bot`
+
+`git pull origin main`
