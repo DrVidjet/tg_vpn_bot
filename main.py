@@ -97,7 +97,7 @@ def create_vpn_client(tg_id: int, username: str = None):
     if success_count == len(XUI_INBOUND_IDS):
         return True, "", base_name, expiry_ms, sub_id
     else:
-        return False, f"Успешно {success_count}/{len(XUI_INBOUND_IDS)} inbound'ов", base_name, expiry_ms
+        return False, f"Успешно {success_count}/{len(XUI_INBOUND_IDS)} inbound'ов", base_name, expiry_ms, sub_id
 
 # Продление клиента
 def renew_vpn_client(tg_id: int, username: str = None, months: int = 1):
@@ -322,6 +322,21 @@ def acquire_lock():
         sys.exit(1)
     return lock_file
 
+# Получение суммы оплаты
+def get_amount(tg_id):
+    data = pending_requests.get(tg_id, {})
+    flow = data.get("flow")
+
+    if flow == "renew":
+        months = data.get("months", 1)
+        return 150 * months
+
+    return 150
+
+# Контакт поддержки
+def support_contact():
+    return f"📩 Поддержка\n👤 Напишите сюда: {SUPPORT}\n\n⏱ Мы ответим вам как можно скорее."
+
 # Функция подгрузки tg пользователей
 def load_users():
     global user_ids, blocked_users, approved_users, uid_counter
@@ -438,13 +453,13 @@ def main_menu():
     return markup
 
 # Функция выбора способа оплаты
-def show_payment_methods(chat_id):
+def show_payment_methods(tg_id, remove_previous=False):
     markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(types.InlineKeyboardButton("💳 Номер карты", callback_data=f"choose_method:card:{chat_id}"))
-    markup.add(types.InlineKeyboardButton("📱 СБП", callback_data=f"choose_method:sbp:{chat_id}"))
-    markup.add(types.InlineKeyboardButton("↩️ Назад", callback_data=f"choose_method:back:{chat_id}"))
+    markup.add(types.InlineKeyboardButton("💳 Номер карты", callback_data=f"choose_method:card:{tg_id}"))
+    markup.add(types.InlineKeyboardButton("📱 СБП", callback_data=f"choose_method:sbp:{tg_id}"))
+    markup.add(types.InlineKeyboardButton("↩️ Назад", callback_data=f"choose_method:back:{tg_id}"))
 
-    bot.send_message(chat_id, "💰 Выберите способ оплаты:", reply_markup=markup)
+    bot.send_message(tg_id, "💰 Выберите способ оплаты:", reply_markup=markup)
 
 # Обработка продления на несколько месяцев
 def process_months_input(message, tg_id):
@@ -460,6 +475,7 @@ def process_months_input(message, tg_id):
 
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("💳 Перейти к оплате", callback_data=f"renew_pay:{tg_id}"))
+        markup.add(types.InlineKeyboardButton("❌ Отмена", callback_data=f"cancel:{tg_id}"))
 
         bot.send_message(
             message.chat.id,
@@ -750,7 +766,7 @@ def handle_paid(call):
     bot.send_message(
         tg_id,
         f"⏳ Заявка отправлена на проверку оплаты.\n"
-        f"Сумма: 150₽"
+        f"Сумма: {get_amount(tg_id)}₽"
     )
     bot.answer_callback_query(call.id)
 
@@ -810,7 +826,7 @@ def handle_choose_method(call):
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(types.InlineKeyboardButton("✅ Я оплатил", callback_data=f"paid:{tg_id}"))
     markup.add(types.InlineKeyboardButton("↩️ Назад", callback_data=f"choose_method:back_to_methods:{tg_id}"))
-
+    amount = get_amount(tg_id)
     if action == "card":
         tcard = config.get("DEFAULT", "TCARD_NUMBER").strip('"')
         scard = config.get("DEFAULT", "SCARD_NUMBER").strip('"')
@@ -818,7 +834,7 @@ def handle_choose_method(call):
         bot.send_message(
             tg_id,
             f"💳 Перевод на карту\n"
-            f"💰 К оплате: <b>150₽</b>\n\n"
+            f"💰 К оплате: <b>{amount}₽</b>\n\n"
             f"Т-Банк <code>{tcard}</code>\n\n"
             f"Сбер <code>{scard}</code>\n\n"
             f"Альфа <code>{acard}</code>\n\n"
@@ -832,7 +848,7 @@ def handle_choose_method(call):
         bot.send_photo(
             tg_id,
             qr_img,
-            caption=f"📱 СБП\n💰 К оплате: 150₽\n\n{sbp_url}\n\nПосле оплаты нажмите кнопку ниже.",
+            caption=f"📱 СБП\n💰 К оплате: <b>{amount}₽</b>\n\n{sbp_url}\n\nПосле оплаты нажмите кнопку ниже.",
             reply_markup=markup
         )
 
@@ -867,6 +883,26 @@ def back_to_payment_methods(call):
         pass
 
     show_payment_methods(call.message.chat.id, remove_previous=True)
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("cancel:"))
+def handle_cancel(call):
+    tg_id = int(call.data.split(":")[1])
+
+    pending_requests.pop(tg_id, None)
+    renewal_data.pop(tg_id, None)
+
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+    bot.send_message(
+        tg_id,
+        "❌ Оплата отменена",
+        reply_markup=main_menu()
+    )
+
     bot.answer_callback_query(call.id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith(("approve:", "reject:", "block:")))
@@ -921,7 +957,7 @@ def admin_actions(call):
                     "IOS: https://apps.apple.com/kz/app/v2raytun/id6476628951\n\n"
                     "2. Для Windows, MAC и Linux, а так же другие клиенты на телефон и инструкции к ним можно посмотреть по этой ссылке:\n https://gist.github.com/kksudo/9e2072b3c60a72040f4e9d6fb9da7e9c\n\n"
                     "2. Для Android и IOS следуйте видеоинструкции ниже. На IOS пропускаем часть с маршрутизацией приложений\n\n"
-                    "Если будут вопросы — 👤 Напишите сюда: {SUPPORT}\n⏱ Мы ответим вам как можно скорее.",
+                    f"Если будут вопросы — 👤 Напишите сюда: {SUPPORT}\n⏱ Мы ответим вам как можно скорее.",
                     parse_mode="HTML"
                 )
 
