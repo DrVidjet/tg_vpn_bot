@@ -10,7 +10,7 @@
 
 `nano API.conf`
 
-Указываем API бота
+Указываем API бота, данные для оплаты и данные 3x-ui
 
 `sudo apt install python3 python3.11-venv`
 
