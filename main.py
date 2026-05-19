@@ -50,16 +50,15 @@ uid_counter = 1
 # Создание клиента
 def create_vpn_client(tg_id: int, username: str = None):
     """Создаёт клиента во всех inbound'ах"""
-    base_email = f"{username}_{tg_id}" if username and username != "no_username" else str(tg_id)
+    base_name = f"{username}_{tg_id}" if username and username != "no_username" else str(tg_id)
     expiry_date = datetime.datetime.now() + datetime.timedelta(days=XUI_EXPIRY_DAYS)
     expiry_ms = int(expiry_date.timestamp() * 1000)
 
     sub_id = str(uuid.uuid4())  # Один subId на всех inbound'ах
-
     success_count = 0
 
     for inbound_id in XUI_INBOUND_IDS:
-        email = f"{base_email}@inbound{inbound_id}"
+        email = f"{base_name}@inbound{inbound_id}"
 
         client = {
             "id": str(uuid.uuid4()),
@@ -69,7 +68,8 @@ def create_vpn_client(tg_id: int, username: str = None):
             "expiryTime": expiry_ms,
             "enable": True,
             "tgId": str(tg_id),
-            "subId": sub_id
+            "subId": sub_id,
+            "flow": "xtls-rprx-vision"
         }
 
         payload = {
@@ -93,26 +93,28 @@ def create_vpn_client(tg_id: int, username: str = None):
             print(f"❌ Inbound {inbound_id} exception: {e}")
 
     if success_count == len(XUI_INBOUND_IDS):
-        return True, "", f"{base_email}@...", expiry_ms
+        return True, "", base_name, expiry_ms          # ← Сохраняем base_name
     else:
-        return False, f"Успешно {success_count}/{len(XUI_INBOUND_IDS)} inbound'ов", f"{base_email}@...", expiry_ms
+        return False, f"Успешно {success_count}/{len(XUI_INBOUND_IDS)} inbound'ов", base_name, expiry_ms
 
 # Продление клиента
 def renew_vpn_client(tg_id: int, username: str = None):
-    """Продлевает подписку с правильной логикой дат"""
+    """Продлевает подписку во всех inbound'ах"""
     try:
         with open("users.json", "r", encoding="utf-8") as f:
             users = json.load(f)
 
         user_data = users.get(str(tg_id))
         if not user_data or not user_data.get("email"):
-            return False, "Пользователь или email не найден", None, None
+            return False, "Email пользователя не найден в users.json", None, None
 
-        email = user_data["email"]
+        base_email = user_data["email"]          # берём как есть из файла
         success_count = 0
         new_expiry = None
 
         for inbound_id in XUI_INBOUND_IDS:
+            search_email = f"{base_email}@inbound{inbound_id}"
+
             # Получаем inbound
             r = requests.get(
                 f"{XUI_URL}/panel/api/inbounds/get/{inbound_id}",
@@ -120,6 +122,7 @@ def renew_vpn_client(tg_id: int, username: str = None):
                 timeout=15
             )
             if r.status_code != 200 or not r.json().get("success"):
+                print(f"⚠️ Не удалось получить inbound {inbound_id}")
                 continue
 
             inbound = r.json().get("obj")
@@ -127,19 +130,13 @@ def renew_vpn_client(tg_id: int, username: str = None):
             clients = settings.get("clients", [])
 
             for client in clients:
-                if client.get("email") == email:
+                if client.get("email") == search_email:
                     now_ms = int(datetime.datetime.now().timestamp() * 1000)
                     current_expiry = client.get("expiryTime", 0)
 
-                    # === Основная логика продления ===
-                    if current_expiry > now_ms:
-                        # Подписка ещё активна — продлеваем от даты окончания
-                        base_time = current_expiry
-                    else:
-                        # Подписка просрочена — продлеваем от сегодня
-                        base_time = now_ms
-
+                    base_time = current_expiry if current_expiry > now_ms else now_ms
                     new_expiry = base_time + (XUI_EXPIRY_DAYS * 24 * 60 * 60 * 1000)
+
                     client["expiryTime"] = new_expiry
 
                     # Обновляем клиента
@@ -157,6 +154,7 @@ def renew_vpn_client(tg_id: int, username: str = None):
 
                     if update.status_code == 200 and update.json().get("success"):
                         success_count += 1
+                        print(f"✅ Inbound {inbound_id} → продлено до {datetime.datetime.fromtimestamp(new_expiry/1000).date()}")
                     break
 
         if new_expiry and success_count > 0:
@@ -164,11 +162,9 @@ def renew_vpn_client(tg_id: int, username: str = None):
             with open("users.json", "w", encoding="utf-8") as f:
                 json.dump(users, f, ensure_ascii=False, indent=4)
 
-            expiry_date = datetime.datetime.fromtimestamp(new_expiry / 1000)
-            print(f"✅ Подписка {email} продлена до {expiry_date.date()}")
-            return True, "", email, new_expiry
+            return True, "", base_email, new_expiry
 
-        return False, "Не удалось продлить ни в одном inbound", None, None
+        return False, f"Клиент не найден ни в одном inbound (проверено {len(XUI_INBOUND_IDS)})", None, None
 
     except Exception as e:
         print(f"❌ Ошибка продления: {e}")
@@ -373,7 +369,7 @@ def ask_vpn_offer(chat_id, loading_message_id=None):
         "• Конфиг для подключения\n"
         "• Пошаговую инструкцию\n\n"
         "💰 <b>Цена:</b>\n"
-        "150₽ / месяц и использование на 3 устройствах\n"
+        "150₽ / месяц и использование на 3 устройствах\n\n"
         "❓ <b>Оформляем?</b>",
         parse_mode="HTML",
         reply_markup=markup
