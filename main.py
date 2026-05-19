@@ -26,6 +26,7 @@ XUI_URL = config.get('DEFAULT', 'XUI_URL').strip('"')
 XUI_API_TOKEN = config.get('DEFAULT', 'XUI_API_TOKEN').strip('"')
 
 XUI_INBOUND_IDS = [int(x.strip()) for x in config.get('DEFAULT', 'XUI_INBOUND_IDS').split(',')]
+XUI_SUB_LINK = config.get('DEFAULT', 'XUI_SUB_LINK').strip('"')
 XUI_EXPIRY_DAYS = config.getint('DEFAULT', 'XUI_EXPIRY_DAYS', fallback=31)
 
 headers = {
@@ -54,7 +55,7 @@ def create_vpn_client(tg_id: int, username: str = None):
     expiry_date = datetime.datetime.now() + datetime.timedelta(days=XUI_EXPIRY_DAYS)
     expiry_ms = int(expiry_date.timestamp() * 1000)
 
-    sub_id = str(uuid.uuid4())  # Один subId на всех inbound'ах
+    sub_id = str(uuid.uuid4())
     success_count = 0
 
     for inbound_id in XUI_INBOUND_IDS:
@@ -93,7 +94,7 @@ def create_vpn_client(tg_id: int, username: str = None):
             print(f"❌ Inbound {inbound_id} exception: {e}")
 
     if success_count == len(XUI_INBOUND_IDS):
-        return True, "", base_name, expiry_ms          # ← Сохраняем base_name
+        return True, "", base_name, expiry_ms, sub_id
     else:
         return False, f"Успешно {success_count}/{len(XUI_INBOUND_IDS)} inbound'ов", base_name, expiry_ms
 
@@ -230,9 +231,32 @@ def get_or_create_uid(tg_id):
     user_ids[tg_id] = uid
     return uid
 
+# Отправка видеоинструкции
+def send_instruction_video(chat_id):
+    """Отправляет видео-инструкцию из папки asset"""
+    video_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'asset', 'instruction.mp4')
+
+    if not os.path.exists(video_path):
+        bot.send_message(chat_id, "📹 Видео-инструкция временно недоступна.\nПожалуйста, воспользуйтесь текстовой инструкцией по ссылке выше.")
+        return
+
+    try:
+        with open(video_path, 'rb') as video:
+            bot.send_video(
+                chat_id,
+                video,
+                caption="📹 <b>Видео-инструкция по подключению</b>\n\n"
+                        "Смотрите, как быстро настроить VPN за 1 минуту.",
+                parse_mode="HTML",
+                supports_streaming=True
+            )
+    except Exception as e:
+        print(f"Ошибка отправки видео: {e}")
+        bot.send_message(chat_id, "Не удалось отправить видео-инструкцию. Используйте текстовую инструкцию выше.")
+
 # Сохранение нового пользователя в файл
-def save_user(tg_id, uid, email=None, username=None, status="approved", expiry_time=None):
-    """Сохраняет/обновляет пользователя (1 подписка)"""
+def save_user(tg_id, uid, email=None, username=None, status="approved", expiry_time=None, sub_id=None):
+    """Сохраняет/обновляет пользователя"""
     if os.path.exists("users.json"):
         with open("users.json", "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -250,6 +274,8 @@ def save_user(tg_id, uid, email=None, username=None, status="approved", expiry_t
             current["email"] = email
         if username and username != "no_username":
             current["username"] = username
+        if sub_id:
+            current["sub_id"] = sub_id
         current["status"] = status
     else:
         # Новый пользователь
@@ -261,7 +287,8 @@ def save_user(tg_id, uid, email=None, username=None, status="approved", expiry_t
             "email": email,
             "username": username or "no_username",
             "status": status,
-            "expiry_time": expiry_time
+            "expiry_time": expiry_time,
+            "sub_id": sub_id
         }
 
     with open("users.json", "w", encoding="utf-8") as f:
@@ -537,35 +564,62 @@ def admin_actions(call):
     action, tg_id_str = call.data.split(":")
     tg_id = int(tg_id_str)
 
-    # Если заявки уже нет — проверяем, возможно это повторное нажатие после ошибки
+    # Если заявки уже нет
     if tg_id not in pending_requests:
-        # Проверяем, не была ли это ошибка создания
         if action == "approve":
             bot.answer_callback_query(call.id, "Попробуйте нажать кнопку ещё раз")
-            return
         else:
-            return bot.answer_callback_query(call.id, "✅ Уже обработано")
+            bot.answer_callback_query(call.id, "✅ Уже обработано")
+        return
 
-    pending = pending_requests.get(tg_id, {})
-    flow = pending.get("flow", "new")
-    username = pending.get("username") or "no_username"
+    data = pending_requests.get(tg_id, {})
+    flow = data.get("flow", "new")
+    username = data.get("username") or "no_username"
     uid = get_or_create_uid(tg_id)
 
     if action == "approve":
         if flow == "new":
-            success, error_msg, email, expiry_ms = create_vpn_client(tg_id, username)
+            # === НОВАЯ ПОДПИСКА ===
+            success, error_msg, base_name, expiry_ms, sub_id = create_vpn_client(tg_id, username)
 
             if success:
                 approved_users.add(tg_id)
-                save_user(tg_id, uid, email, username, "approved", expiry_ms)
+                save_user(tg_id, uid, base_name, username, "approved", expiry_ms, sub_id)
+
+                sub_link = f"https://vidjetvpn.com:2096/subscription_vidjet_vpn_link/{sub_id}"
 
                 bot.send_message(call.message.chat.id, f"✅ Пользователь {tg_id} успешно создан в 3x-ui")
-                bot.send_message(tg_id, "🎉 Подписка оплачена, добро пожаловать!", reply_markup=main_menu())
 
-                # Удаляем заявку только после успеха
+                # Основное сообщение со ссылкой
+                bot.send_message(
+                    tg_id,
+                    "🎉 <b>Подписка успешно активирована!</b>\n\n"
+                    f"🔗 <b>Ваша ссылка на подписку:</b>\n"
+                    f"<code>{sub_link}</code>\n\n"
+                    "📲 Нажмите на ссылку → Импорт в приложение",
+                    parse_mode="HTML"
+                )
+
+                bot.send_message(
+                    tg_id,
+                    "📋 <b>Инструкция по подключению:</b>\n\n"
+                    "1. Скачайте приложение v2raytun для телефона\n"
+                    "Android: https://play.google.com/store/apps/details?id=com.v2raytun.android\n"
+                    "IOS: https://apps.apple.com/kz/app/v2raytun/id6476628951\n\n"
+                    "2. Для Windows, MAC и Linux, а так же другие клиенты на телефон и инструкции к ним можно посмотреть по этой ссылке:\n https://gist.github.com/kksudo/9e2072b3c60a72040f4e9d6fb9da7e9c\n\n"
+                    "2. Для Android и IOS следуйте видеоинструкции ниже. На IOS пропускаем часть с маршрутизацией приложений\n\n"
+                    "Если будут вопросы — 👤 Напишите сюда: {SUPPORT}\n⏱ Мы ответим вам как можно скорее.",
+                    parse_mode="HTML"
+                )
+
+                send_instruction_video(tg_id)
+
+                bot.send_message(tg_id, "🎉 Добро пожаловать в VidjetVPN!", reply_markup=main_menu())
+
                 pending_requests.pop(tg_id, None)
+
             else:
-                # При ошибке — НЕ удаляем из pending_requests, чтобы можно было повторить
+                # Ошибка создания
                 bot.send_message(
                     call.message.chat.id,
                     f"❌ Ошибка создания пользователя {tg_id} в 3x-ui\n\n"
@@ -575,16 +629,20 @@ def admin_actions(call):
                 )
                 bot.send_message(
                     tg_id,
-                    f"⏳ Ваша заявка обрабатывается.\n👤  При возникновении вопросов — Напишите сюда: {SUPPORT}\n\n⏱ Мы ответим вам как можно скорее."
+                    f"⏳ Ваша заявка обрабатывается.\n\n"
+                    f"👤 При возникновении вопросов — Напишите сюда: {SUPPORT}"
                 )
+
         else:
-            # Продление
+            # === ПРОДЛЕНИЕ ===
             success, error_msg, email, expiry_ms = renew_vpn_client(tg_id, username)
             if success:
                 approved_users.add(tg_id)
                 save_user(tg_id, uid, email, username, "approved", expiry_ms)
+
                 bot.send_message(call.message.chat.id, f"✅ Продление для {tg_id} успешно")
                 bot.send_message(tg_id, "🔄 Подписка продлена, с возвращением!", reply_markup=main_menu())
+
                 pending_requests.pop(tg_id, None)
             else:
                 bot.send_message(call.message.chat.id, f"❌ Ошибка продления {tg_id}\n{error_msg}")
@@ -599,11 +657,11 @@ def admin_actions(call):
             f"Вы можете попробовать оплатить ещё раз."
         )
 
-        # Восстанавливаем полное состояние
         pending_requests[tg_id] = {
             "id": get_or_create_uid(tg_id),
             "username": current_data.get("username"),
-            "flow": flow
+            "flow": flow,
+            "amount": 150
         }
 
         show_payment_methods(tg_id)

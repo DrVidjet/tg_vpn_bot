@@ -12,5 +12,6 @@ SBP_URL="https://example.com/sbp"
 # ================== X-UI / 3x-ui ==================
 XUI_URL = "https://example.com/asdgd/panel"
 XUI_API_TOKEN = ""
+XUI_SUB_LINK = "https://example.com:1111/sub"
 XUI_INBOUND_IDS = 1,2,3
 XUI_EXPIRY_DAYS = 30
