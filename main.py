@@ -448,7 +448,49 @@ def menu_handler(message):
         return
 
     if text == "📦 Моя подписка":
-        bot.send_message(message.chat.id, "📦 Ваша подписка (в разработке)")
+        try:
+            if not os.path.exists("users.json"):
+                bot.send_message(message.chat.id, "❌ Данные подписки не найдены.")
+                return
+
+            with open("users.json", "r", encoding="utf-8") as f:
+                users = json.load(f)
+
+            user_data = users.get(str(tg_id))
+
+            if not user_data:
+                bot.send_message(message.chat.id, "❌ Подписка не найдена.")
+                return
+
+            expiry_ms = user_data.get("expiry_time")
+            sub_id = user_data.get("sub_id")
+
+            if not expiry_ms or not sub_id:
+                bot.send_message(message.chat.id, "❌ Данные подписки неполные.")
+                return
+
+            expiry_date = datetime.datetime.fromtimestamp(
+                expiry_ms / 1000
+            ).strftime("%d.%m.%Y")
+
+            sub_link = f"{XUI_SUB_LINK}/{sub_id}"
+
+            bot.send_message(
+                message.chat.id,
+                "📦 <b>Ваша подписка</b>\n\n"
+                f"🔗 <b>Ссылка:</b>\n"
+                f"<code>{sub_link}</code>\n\n"
+                f"📅 <b>Действует до:</b> {expiry_date}\n\n"
+                "❤️ Спасибо, что вы с нами <3",
+                parse_mode="HTML"
+            )
+
+        except Exception as e:
+            print(f"Ошибка получения подписки: {e}")
+            bot.send_message(
+                message.chat.id,
+                "❌ Не удалось загрузить информацию о подписке."
+            )
     elif text == "🔄 Продлить подписку":
         uid = get_or_create_uid(tg_id)
         pending_requests[tg_id] = {
