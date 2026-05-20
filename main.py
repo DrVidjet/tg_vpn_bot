@@ -767,8 +767,8 @@ def get_monthly_report():
 
     for p in sorted(month_payments, key=lambda x: x["date"], reverse=True)[:15]:
         text += (
-            f"{'─' * 15}\n"
-            f"• {p.get('email', '—')} "
+            f"{'─' * 18}\n"
+            f"• {p.get('email', '—')}\n"
             f"  {p['date'][:16]} | "
             f"{p['amount']}₽ | "
             f"({p['type']})\n"
