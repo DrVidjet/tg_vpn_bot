@@ -558,9 +558,11 @@ def sub(tg_id, message):
                 bot.send_message(message.chat.id, "❌ Данные подписки неполные.")
                 return
 
+            moscow_tz = ZoneInfo("Europe/Moscow")
+
             expiry_date = datetime.datetime.fromtimestamp(
-                expiry_ms / 1000
-            ).strftime("%d.%m.%Y")
+                expiry_ms / 1000, tz=moscow_tz
+            ).strftime("%d.%m.%Y %H:%M")
 
             sub_link = f"{XUI_SUB_LINK}/{sub_id}"
 
@@ -569,7 +571,7 @@ def sub(tg_id, message):
                 "📦 <b>Ваша подписка</b>\n\n"
                 f"🔗 <b>Ссылка:</b>\n"
                 f"<code>{sub_link}</code>\n\n"
-                f"📅 <b>Действует до:</b> {expiry_date}\n\n"
+                f"📅 <b>Действует до:</b> {expiry_date} (МСК)\n\n"
                 "❤️ Спасибо, что вы с нами!",
                 parse_mode="HTML"
             )
@@ -1144,9 +1146,8 @@ def show_users(message):
 
         tg_id = key if not key.startswith("uid_") else "— (бессрочно)"
 
-        expiry_date = "БЕССРОЧНО" if expiry == 0 else datetime.datetime.fromtimestamp(
-            expiry / 1000
-        ).strftime("%d.%m.%Y")
+        moscow_tz = ZoneInfo("Europe/Moscow")
+        expiry_date = "БЕССРОЧНО" if expiry == 0 else datetime.datetime.fromtimestamp(expiry / 1000, tz=moscow_tz).strftime("%d.%m.%Y %H:%M")
 
         online = False
         if email:
