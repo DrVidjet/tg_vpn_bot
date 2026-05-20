@@ -756,6 +756,11 @@ def handle_paid(call):
     if not data:
         return bot.answer_callback_query(call.id, "Нет активной заявки")
 
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
     flow = data.get("flow", "new")
 
     uid = get_or_create_uid(tg_id)
@@ -769,7 +774,9 @@ def handle_paid(call):
 
     bot.send_message(
         tg_id,
-        f"⏳ Заявка отправлена на проверку оплаты.\n"
+        f"⏳ Заявка отправлена на проверку оплаты.\n\n"
+        "Обычно проверка занимает от 1 до 15 минут.",
+        reply_markup=main_menu()
     )
     bot.answer_callback_query(call.id)
 
@@ -908,6 +915,21 @@ def handle_cancel(call):
 
     bot.answer_callback_query(call.id)
 
+# Блокировка текстового спама "Я оплатил"
+@bot.message_handler(func=lambda m: m.text and any(phrase in m.text.lower() for phrase in
+    ["я оплатил", "я оплатилa", "оплатил", "оплатила", "перевёл", "перевела"]))
+def handle_text_paid(message):
+    tg_id = message.from_user.id
+
+    if tg_id in pending_requests:
+        bot.send_message(
+            tg_id,
+            "✅ Используйте кнопку «Я оплатил», а не пишите текстом.\n"
+            "Если кнопка исчезла — ожидайте подтверждения оплаты. В среднем она занимает до 15 минут. Если подтверждение не приходит дольше, 👤 Напишите сюда: {SUPPORT}"
+        )
+    else:
+        bot.send_message(tg_id, "Если вы хотите оплатить — нажмите «🔄 Продлить подписку».")
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith(("approve:", "reject:", "block:")))
 def admin_actions(call):
     action, tg_id_str = call.data.split(":")
@@ -945,12 +967,14 @@ def admin_actions(call):
                 bot.send_message(
                     tg_id,
                     "📋 <b>Инструкция по подключению:</b>\n\n"
-                    "1. Скачайте приложение v2raytun для телефона\n"
+                    "1. Скачайте приложение v2raytun\n"
                     "Android: https://play.google.com/store/apps/details?id=com.v2raytun.android\n"
                     "IOS: https://apps.apple.com/kz/app/v2raytun/id6476628951\n\n"
-                    "2. Для Windows, MAC и Linux, а так же другие клиенты на телефон и инструкции к ним можно посмотреть по этой ссылке:\n https://gist.github.com/kksudo/9e2072b3c60a72040f4e9d6fb9da7e9c\n\n"
-                    "3. Для Android и IOS следуйте видеоинструкции ниже. На IOS пропускаем часть с маршрутизацией приложений.\n"
-                    "4. Пользуемся подключениями 🏴‍☠Устройство-1,2,3, внешние сервера (🇫🇮HELSINKI, 🇸🇪STOKGOLM и тд) используем только если основное подключение отвалилось!\n"
+                    "2. Для Windows, MAC и Linux качаем с официального сайта\n"
+                    "https://v2raytun.com/\n"
+                    "А так же другие клиенты и инструкции к ним можно посмотреть по этой ссылке:\n https://gist.github.com/kksudo/9e2072b3c60a72040f4e9d6fb9da7e9c\n\n"
+                    "3. Для Android и IOS следуйте видеоинструкции ниже. На IOS пропускаем часть с маршрутизацией приложений.\n\n"
+                    "4. Пользуемся подключениями\n 🏴‍☠Устройство-1,2,3\nВнешние сервера\n🇫🇮HELSINKI, 🇸🇪STOKGOLM и тд\nиспользуем только если основное подключение отвалилось!\n\n"
                     "5. Одно устройство - 1 подключение. Что это значит? Например хотим сидеть с ноутбука и с телефона. На ноутбуке выбираем 🏴‍☠Устройство-1, на телефоне 🏴‍☠Устройство-2. СИДЕТЬ С ДВУХ УСТРОЙСТВ НА ОДНОМ ПОДКЛЮЧЕНИИ НЕЛЬЗЯ!\n\n"
                     f"Если будут вопросы — 👤 Напишите сюда: {SUPPORT}\n⏱ Мы ответим вам как можно скорее.",
                     parse_mode="HTML"
