@@ -341,16 +341,21 @@ def get_inbound_remarks():
 
         inbounds = r.json().get("obj", [])
 
+
+
+        allowed_ids = XUI_INBOUND_IDS[3:]
+
         remarks = []
 
-        allowed_inbounds = XUI_INBOUND_IDS[3:]
+        inbound_map = {i.get("id"): i for i in inbounds}
 
-        for inbound in inbounds:
-            inbound_id = inbound.get("id")
+        for inbound in allowed_ids:
+            inbound = inbound_map.get(inbound_id)
+            if not inbound:
+                continue
 
-            if inbound_id in allowed_inbounds:
-                remark = inbound.get("remark", f"Inbound-{inbound_id}")
-                remarks.append(remark)
+            remark = inbound.get("remark", f"Inbound-{inbound_id}")
+            remarks.append(remark)
 
 
         return remarks
