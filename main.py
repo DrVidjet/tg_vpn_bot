@@ -719,7 +719,12 @@ def admin_panel():
 
 # Сохранение платежа для отчета
 def save_payment(tg_id: int, amount: int, months: int, payment_type: str, username: str = None, email: str = None):
-    """Сохраняет платеж в pay.json"""
+
+    # Админа игнорим
+    if tg_id == ADMIN_ID:
+        return
+
+    # Сохраняет платеж в pay.json
     if os.path.exists(PAYMENTS_FILE):
         with open(PAYMENTS_FILE, "r", encoding="utf-8") as f:
             payments = json.load(f)
