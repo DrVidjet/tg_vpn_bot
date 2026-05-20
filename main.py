@@ -327,6 +327,37 @@ def get_user_traffic(base_email):
 
     return total_up, total_down
 
+# Получение названий inbound'ов (remark)
+def get_inbound_remarks():
+    try:
+        r = requests.get(
+            f"{XUI_URL}/panel/api/inbounds/list",
+            headers=headers,
+            timeout=15
+        )
+
+        if r.status_code != 200 or not r.json().get("success"):
+            return []
+
+        inbounds = r.json().get("obj", [])
+
+        remarks = []
+
+        for inbound in inbounds:
+            inbound_id = inbound.get("id")
+
+            if inbound_id in XUI_INBOUND_IDS:
+                remark = inbound.get("remark", f"Inbound-{inbound_id}")
+
+                # убираем пустые/дубли
+                if remark and remark not in remarks:
+                    remarks.append(remark)
+
+        return remarks
+
+    except Exception as e:
+        print(f"Ошибка получения inbound remarks: {e}")
+        return []
 
 
 # ====================== Работа с файлами =======================
@@ -845,13 +876,22 @@ def ask_vpn_offer(chat_id, loading_message_id=None):
         types.InlineKeyboardButton("✅ Да, оформляем", callback_data=f"offer:yes:{chat_id}"),
         types.InlineKeyboardButton("❌ Нет", callback_data=f"offer:no:{chat_id}")
     )
+
+    # Получаем сервера
+    remarks = get_inbound_remarks()
+
+    servers_text = ""
+    for remark in remarks:
+        servers_text += f"• {remark}\n"
+
+    if not servers_text:
+        servers_text = "• 🇸🇪 Стокгольм ×2\n• 🇫🇮 Хельсинки ×1\n• 🇫🇷 Париж ×1\n"
+
     bot.send_message(
         chat_id,
         "🔥 <b>Добро пожаловать в VidjetVPN</b> 🔥\n\n"
         "🌍 <b>Доступные серверы:</b>\n"
-        "• 🇸🇪 Стокгольм ×2\n"
-        "• 🇫🇮 Хельсинки ×1\n"
-        "• 🇫🇷 Париж ×1\n\n"
+        f"{servers_text}\n"
         "🏴‍☠ Интернет в этих регионах свободный, без ограничений!\n\n"
         "⚡ <b>Преимущества:</b>\n"
         "• Без ограничений по трафику\n"
