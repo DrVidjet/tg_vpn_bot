@@ -1170,7 +1170,7 @@ def show_users(message):
             f"UP: {up_gb} GB\n"
             f"DOWN: {down_gb} GB\n"
             f"EXPIRE: {expiry_date}\n"
-            f"{'─' * 30}\n\n"
+            f"{'─' * 20}\n\n"
         )
 
     # Отправляем частями, если слишком длинное сообщение
