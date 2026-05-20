@@ -1175,7 +1175,6 @@ def ask_add_unlimited_user(message):
     msg = bot.send_message(
         message.chat.id,
         "➕ Введите **Email** для бессрочного пользователя:\n"
-        "(например: ivan@gmail.com)"
     )
     bot.register_next_step_handler(msg, process_add_unlimited_by_email)
 
@@ -1185,8 +1184,6 @@ def process_add_unlimited_by_email(message):
         return
 
     email = message.text.strip().lower()
-    if "@" not in email:
-        return bot.send_message(message.chat.id, "❌ Некорректный email.")
 
     success, error_msg, base_name, uid, sub_id = create_unlimited_by_email(email)
 
