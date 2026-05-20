@@ -797,10 +797,37 @@ def start_handler(message):
 
     if tg_id in blocked_users:
         return
-    if tg_id in approved_users:
-        bot.send_message(message.chat.id, "Добро пожаловать 👇", reply_markup=main_menu())
+
+    user_data = None
+
+    if os.path.exists("users.json"):
+        try:
+            with open("users.json", "r", encoding="utf-8") as f:
+                users = json.load(f)
+
+            user_data = users.get(str(tg_id))
+        except:
+            user_data = None
+
+    if user_data and user_data.get("status") == "approved":
+        try:
+            bot.delete_message(message.chat.id, loading_msg.message_id)
+        except:
+            pass
+
+        bot.send_message(
+            message.chat.id,
+            "Добро пожаловать 👇",
+            reply_markup=main_menu()
+        )
         return
+
     if tg_id in pending_requests:
+        try:
+            bot.delete_message(message.chat.id, loading_msg.message_id)
+        except:
+            pass
+
         bot.send_message(message.chat.id, "🕚 Жду подтверждения")
         return
 
