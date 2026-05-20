@@ -1190,10 +1190,6 @@ def process_add_unlimited_by_email(message):
 
     email = message.text.strip().lower()
 
-    # Простая проверка
-    if "@" not in email or "." not in email:
-        return bot.send_message(message.chat.id, "❌ Некорректный email. Попробуйте ещё раз.")
-
     success, error_msg, base_name, sub_id = create_unlimited_by_email(email)
 
     if success:
