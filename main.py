@@ -343,15 +343,15 @@ def get_inbound_remarks():
 
         remarks = []
 
+        allowed_inbounds = XUI_INBOUND_IDS[3:]
+
         for inbound in inbounds:
             inbound_id = inbound.get("id")
 
-            if inbound_id in XUI_INBOUND_IDS:
+            if inbound_id in allowed_inbounds:
                 remark = inbound.get("remark", f"Inbound-{inbound_id}")
+                remarks.append(remark)
 
-                # убираем пустые/дубли
-                if remark and remark not in remarks:
-                    remarks.append(remark)
 
         return remarks
 
