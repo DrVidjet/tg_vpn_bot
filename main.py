@@ -763,14 +763,14 @@ def get_monthly_report():
     text = f"📊 Отчёт за {now.strftime('%B %Y')}\n\n"
     text += f"💰 Всего платежей: {count}\n"
     text += f"💵 Доход за месяц: {total_income} ₽\n\n"
-    text += "Последние платежи:\n"
+    text += "Последние платежи:\n\n"
 
     for p in sorted(month_payments, key=lambda x: x["date"], reverse=True)[:15]:
         text += (
             f"• {p['date'][:16]} | "
-            f"{p['amount']}₽ | "
-            f"{p.get('email', '—')} "
+            f"{p['amount']}₽ |"
             f"({p['type']})\n"
+            f"{p.get('email', '—')} "
         )
 
     return text
