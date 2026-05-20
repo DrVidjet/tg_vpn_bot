@@ -21,7 +21,7 @@ PAYMENTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pay.js
 
 API_TOKEN = config.get('DEFAULT', 'API').strip('"')
 ADMIN_ID = config.getint('DEFAULT', 'ADMIN_ID')
-SUPPORT = "t.me/VidjetVPN?direct"
+SUPPORT = PRICE_PER_MONTH = config.getint('DEFAULT', 'SUPPORT_LINK')
 PRICE_PER_MONTH = config.getint('DEFAULT', 'PRICE_PER_MONTH')
 
 # Настройки X-UI
