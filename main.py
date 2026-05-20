@@ -172,6 +172,49 @@ def renew_vpn_client(tg_id: int, username: str = None, months: int = 1):
         print(f"❌ Ошибка продления: {e}")
         return False, str(e), None, None
 
+def create_unlimited_vpn_client(tg_id: int, username: str = None):
+    """Создаёт бессрочного клиента во всех inbound'ах"""
+    base_name = f"{username}_{tg_id}" if username and username != "no_username" else str(tg_id)
+    sub_id = str(uuid.uuid4())
+    success_count = 0
+
+    for inbound_id in XUI_INBOUND_IDS:
+        email = f"{base_name}@inbound{inbound_id}"
+        client = {
+            "id": str(uuid.uuid4()),
+            "email": email,
+            "limitIp": 0,
+            "totalGB": 0,
+            "expiryTime": 0,                    # ← БЕССРОЧНО
+            "enable": True,
+            "tgId": str(tg_id),
+            "subId": sub_id,
+            "flow": "xtls-rprx-vision"
+        }
+        payload = {
+            "id": inbound_id,
+            "settings": json.dumps({"clients": [client]})
+        }
+        try:
+            r = requests.post(
+                f"{XUI_URL}/panel/api/inbounds/addClient",
+                headers=headers,
+                json=payload,
+                timeout=15
+            )
+            if r.status_code == 200 and r.json().get("success"):
+                success_count += 1
+                print(f"✅ [БЕССРОЧНО] Inbound {inbound_id} → {email}")
+            else:
+                print(f"❌ Inbound {inbound_id} ошибка: {r.text}")
+        except Exception as e:
+            print(f"❌ Inbound {inbound_id} exception: {e}")
+
+    if success_count == len(XUI_INBOUND_IDS):
+        return True, "", base_name, 0, sub_id
+    else:
+        return False, f"Успешно {success_count}/{len(XUI_INBOUND_IDS)}", base_name, 0, sub_id
+
 # Удаление клиента
 def delete_vpn_user(tg_id):
 
@@ -542,6 +585,7 @@ def admin_panel():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
 
     markup.add("👥 Пользователи")
+    markup.add("➕ Добавить пользователя")
     markup.add("🗑 Удалить пользователя")
     markup.add("🖥 Статус серверов")
 
@@ -1123,6 +1167,68 @@ def show_users(message):
 
     for i in range(0, len(result), 4000):
         bot.send_message(message.chat.id, result[i:i+4000])
+
+# ==================== ДОБАВИТЬ ПОЛЬЗОВАТЕЛЯ ====================
+
+@bot.message_handler(func=lambda m:
+    m.from_user.id == ADMIN_ID and m.text == "➕ Добавить пользователя")
+def ask_add_user(message):
+    if not is_admin(message.from_user.id):
+        return
+    msg = bot.send_message(
+        message.chat.id,
+        "➕ Введите TG_ID пользователя для бессрочного добавления:"
+    )
+    bot.register_next_step_handler(msg, process_add_unlimited_user)
+
+
+def process_add_unlimited_user(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    try:
+        tg_id = int(message.text.strip())
+    except:
+        return bot.send_message(message.chat.id, "❌ Неверный TG_ID. Введите число.")
+
+    username = f"admin_added_{tg_id}"
+    uid = get_or_create_uid(tg_id)
+
+    success, error_msg, base_name, expiry_ms, sub_id = create_unlimited_vpn_client(tg_id, username)
+
+    if success:
+        approved_users.add(tg_id)
+        save_user(tg_id, uid, base_name, username, "approved", expiry_ms, sub_id)
+
+        sub_link = f"{XUI_SUB_LINK}/{sub_id}"
+
+        bot.send_message(
+            message.chat.id,
+            f"✅ Пользователь {tg_id} успешно добавлен **бессрочно**!\n\n"
+            f"🔗 Ссылка на подписку:\n"
+            f"`{sub_link}`",
+            parse_mode="Markdown"
+        )
+
+        # Опционально: отправить сообщение самому пользователю
+        try:
+            bot.send_message(
+                tg_id,
+                "🎉 Администратор добавил вам **бессрочную** подписку!\n\n"
+                f"🔗 Ваша ссылка:\n"
+                f"`{sub_link}`\n\n"
+                "Скопируйте её и вставьте в приложение.",
+                parse_mode="Markdown",
+                reply_markup=main_menu()
+            )
+        except:
+            pass  # пользователь мог заблокировать бота
+
+    else:
+        bot.send_message(
+            message.chat.id,
+            f"❌ Ошибка добавления пользователя {tg_id}\n{error_msg}"
+        )
 
 @bot.message_handler(func=lambda m:
     m.from_user.id == ADMIN_ID and
