@@ -241,100 +241,62 @@ def process_delete_user(message):
     else:
         bot.send_message(message.chat.id, f"❌ {msg}")
 
-# Получение нод
-def get_nodes():
-    try:
-        r = requests.get(
-            f"{XUI_URL}/panel/api/nodes/list",
-            headers=headers,
-            timeout=15
-        )
-        if r.status_code == 200 and r.json().get("success"):
-            return r.json().get("obj", [])
-    except Exception as e:
-        print(f"Nodes fetch error: {e}")
-    return []
-
-# Получение метрик с нод
-def get_node_cpu(node_id):
-    try:
-        r = requests.get(
-            f"{XUI_URL}/panel/api/nodes/history/{node_id}/cpu/60",
-            headers=headers,
-            timeout=10
-        )
-        if r.status_code == 200 and r.json().get("success"):
-            data = r.json().get("obj", [])
-            if data:
-                return data[-1].get("value", None)
-    except:
-        pass
-    return None
-
-def get_node_mem(node_id):
-    try:
-        r = requests.get(
-            f"{XUI_URL}/panel/api/nodes/history/{node_id}/mem/60",
-            headers=headers,
-            timeout=10
-        )
-        if r.status_code == 200 and r.json().get("success"):
-            data = r.json().get("obj", [])
-            if data:
-                return data[-1].get("value", None)
-    except:
-        pass
-    return None
-
-# Получение статуса серверов
 def get_servers_status():
-
     text = "🖥 Статус серверов\n\n"
 
     # CENTRAL
     try:
-        r = requests.get(
-            f"{XUI_URL}/panel/api/server/status",
-            headers=headers,
-            timeout=15
-        )
-
+        r = requests.get(f"{XUI_URL}/panel/api/server/status", headers=headers, timeout=15)
         if r.status_code == 200 and r.json().get("success"):
             s = r.json()["obj"]
-
             text += (
                 "🌐 CENTRAL\n"
-                f"CPU: {s['cpu']}%\n"
+                f"CPU: {s.get('cpu', 'N/A')}%\n"
                 f"RAM: {round(s['mem']['current']/1024**3, 2)} / "
                 f"{round(s['mem']['total']/1024**3, 2)} GB\n"
-                f"TCP: {s['tcpCount']}\n"
-                f"XRAY: {s['xray']['state']}\n\n"
+                f"TCP: {s.get('tcpCount', 'N/A')}\n"
+                f"XRAY: {s['xray'].get('state', 'N/A')}\n\n"
             )
     except Exception as e:
         text += f"CENTRAL ERROR: {e}\n\n"
 
-    # NODES
-    nodes = get_nodes()
+    # NODES — используем Probe
+    try:
+        r = requests.get(f"{XUI_URL}/panel/api/nodes/list", headers=headers, timeout=15)
+        if r.status_code == 200 and r.json().get("success"):
+            nodes = r.json()["obj"]
+            text += "🖥 NODES\n\n"
+            for node in nodes:
+                node_id = node.get("id")
+                name = node.get("name", "Unknown")
+                status = node.get("status", "unknown")
 
-    text += "🖥 NODES\n\n"
+                # Probe — самый надёжный способ получить актуальные CPU/RAM
+                cpu = mem = None
+                try:
+                    probe = requests.post(
+                        f"{XUI_URL}/panel/api/nodes/probe/{node_id}",
+                        headers=headers,
+                        timeout=12
+                    )
+                    if probe.status_code == 200 and probe.json().get("success"):
+                        obj = probe.json().get("obj", {})
+                        cpu = obj.get("cpu")
+                        mem = obj.get("mem")
+                except:
+                    pass
 
-    for node in nodes:
-        node_id = node.get("id")
+                cpu_str = f"{round(cpu, 1)}%" if cpu is not None else "N/A"
+                mem_str = f"{round(mem, 1)}%" if mem is not None else "N/A"
 
-        cpu = get_node_cpu(node_id)
-        mem = get_node_mem(node_id)
-
-        status = node.get("status", "unknown")
-
-        cpu_str = f"{round(cpu, 1)}%" if cpu is not None else "N/A"
-        mem_str = f"{round(mem, 1)}%" if mem is not None else "N/A"
-
-        text += (
-            f"🖥 {node.get('name')}\n"
-            f"STATUS: {'🟢' if status == 'online' else '🔴'}\n"
-            f"CPU: {cpu_str}\n"
-            f"MEM: {mem_str}\n\n"
-        )
+                text += (
+                    f"🖥 {name}\n"
+                    f"STATUS: {'🟢' if status == 'online' else '🔴'}\n"
+                    f"CPU: {cpu_str}\n"
+                    f"MEM: {mem_str}\n\n"
+                )
+    except Exception as e:
+        text += f"NODES ERROR: {e}\n"
 
     return text
 
