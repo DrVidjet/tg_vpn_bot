@@ -11,6 +11,7 @@ import json
 import requests
 import uuid
 import datetime
+from zoneinfo import ZoneInfo
 
 # ====================== КОНФИГУРАЦИЯ ======================
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'API.conf')
