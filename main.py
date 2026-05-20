@@ -22,6 +22,7 @@ PAYMENTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pay.js
 API_TOKEN = config.get('DEFAULT', 'API').strip('"')
 ADMIN_ID = config.getint('DEFAULT', 'ADMIN_ID')
 SUPPORT = config.get('DEFAULT', 'SUPPORT_LINK').strip('"')
+GRUPP = config.get('DEFAULT', 'GRUPP_LINK').strip('"')
 PRICE_PER_MONTH = config.getint('DEFAULT', 'PRICE_PER_MONTH')
 
 # Настройки X-UI
@@ -1230,7 +1231,9 @@ def admin_actions(call):
                     f"🔗 <b>Ваша ссылка на подписку:</b>\n"
                     f"<code>{sub_link}</code>\n"
                     "Переходить по ссылке не нужно, ее необходимо скопировать и вставить в приложение.\n\n"
-                    "🎉 Добро пожаловать в VidjetVPN!",
+                    "🎉 Добро пожаловать в VidjetVPN!\n\n"
+                    "👇 Подписывайтесь на группу, чтобы быть в курсе новостей:\n"
+                    f"🏴‍☠{GRUPP}",
                     parse_mode="HTML",
                     reply_markup=main_menu()
                 )
