@@ -172,6 +172,19 @@ def renew_vpn_client(tg_id: int, username: str = None, months: int = 1):
         print(f"❌ Ошибка продления: {e}")
         return False, str(e), None, None
 
+def get_or_create_uid(tg_id=None):
+    """Возвращает UID. Если tg_id=None — создаёт новый для бессрочного пользователя"""
+    global uid_counter
+    if tg_id is not None and tg_id in user_ids:
+        return user_ids[tg_id]
+
+    uid = uid_counter
+    uid_counter += 1
+
+    if tg_id is not None:
+        user_ids[tg_id] = uid
+    return uid
+
 def create_unlimited_by_email(email: str):
     """Создаёт бессрочного клиента и сохраняет в users.json"""
     sub_id = str(uuid.uuid4())
@@ -211,7 +224,7 @@ def create_unlimited_by_email(email: str):
             print(f"❌ Inbound {inbound_id} exception: {e}")
 
     if success_count == len(XUI_INBOUND_IDS):
-        uid = get_or_create_uid(0)  # Получаем новый UID
+        uid = get_or_create_uid()
         # Сохраняем в users.json
         save_user_for_unlimited(uid, base_name, sub_id)
         return True, "", base_name, uid, sub_id
@@ -364,32 +377,28 @@ def load_users():
         data = json.load(f)
 
     max_uid = 0
-    for tg_id_str, info in data.items():
-        tg_id = int(tg_id_str)
+    for key, info in data.items():
         uid = info.get("uid")
         status = info.get("status")
 
-        if uid is not None:
-            user_ids[tg_id] = uid
-            if uid > max_uid:
+        # Обычный пользователь (ключ = TG_ID)
+        if key.isdigit():
+            tg_id = int(key)
+            if uid is not None:
+                user_ids[tg_id] = uid
+                if uid > max_uid:
+                    max_uid = uid
+            if status == "block":
+                blocked_users.add(tg_id)
+            elif status == "approved":
+                approved_users.add(tg_id)
+
+        # Бессрочный пользователь (ключ вида uid_xxx)
+        elif key.startswith("uid_"):
+            if uid is not None and uid > max_uid:
                 max_uid = uid
 
-        if status == "block":
-            blocked_users.add(tg_id)
-        elif status == "approved":
-            approved_users.add(tg_id)
-
     uid_counter = max_uid + 1 if max_uid > 0 else 1
-
-# Выдача uid
-def get_or_create_uid(tg_id):
-    global uid_counter
-    if tg_id in user_ids:
-        return user_ids[tg_id]
-    uid = uid_counter
-    uid_counter += 1
-    user_ids[tg_id] = uid
-    return uid
 
 # Отправка видеоинструкции
 def send_instruction_video(chat_id):
