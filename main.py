@@ -1096,7 +1096,8 @@ def admin_actions(call):
         return
     try:
             bot.delete_message(chat_id, loading_message_id)
-        except:
+    except:
+        pass
     # Если заявки уже нет
     if tg_id not in pending_requests:
         if action == "approve":
