@@ -173,31 +173,28 @@ def renew_vpn_client(tg_id: int, username: str = None, months: int = 1):
         return False, str(e), None, None
 
 def create_unlimited_by_email(email: str):
-    """Создаёт бессрочного клиента по указанному email"""
+    """Создаёт бессрочного клиента и сохраняет в users.json"""
     sub_id = str(uuid.uuid4())
     success_count = 0
-    base_name = email  # используем email как основу
+    base_name = email.strip().lower()
 
     for inbound_id in XUI_INBOUND_IDS:
         client_email = f"{base_name}@inbound{inbound_id}"
-
         client = {
             "id": str(uuid.uuid4()),
             "email": client_email,
             "limitIp": 0,
             "totalGB": 0,
-            "expiryTime": 0,
+            "expiryTime": 0,          # БЕССРОЧНО
             "enable": True,
             "tgId": "",
             "subId": sub_id,
             "flow": "xtls-rprx-vision"
         }
-
         payload = {
             "id": inbound_id,
             "settings": json.dumps({"clients": [client]})
         }
-
         try:
             r = requests.post(
                 f"{XUI_URL}/panel/api/inbounds/addClient",
@@ -214,78 +211,55 @@ def create_unlimited_by_email(email: str):
             print(f"❌ Inbound {inbound_id} exception: {e}")
 
     if success_count == len(XUI_INBOUND_IDS):
-        return True, "", base_name, sub_id
+        uid = get_or_create_uid(0)  # Получаем новый UID
+        # Сохраняем в users.json
+        save_user_for_unlimited(uid, base_name, sub_id)
+        return True, "", base_name, uid, sub_id
     else:
-        return False, f"Успешно {success_count}/{len(XUI_INBOUND_IDS)} inbound'ов", base_name, sub_id
+        return False, f"Успешно {success_count}/{len(XUI_INBOUND_IDS)}", base_name, None, sub_id
 
 # Удаление клиента
-def delete_vpn_user(tg_id):
-
+def delete_vpn_user_by_uid(uid: int):
     if not os.path.exists("users.json"):
         return False, "users.json not found"
 
     with open("users.json", "r", encoding="utf-8") as f:
         users = json.load(f)
 
-    user = users.get(str(tg_id))
+    # Ищем пользователя по UID
+    target_key = None
+    for key, info in users.items():
+        if info.get("uid") == uid:
+            target_key = key
+            break
 
-    if not user:
-        return False, "User not found"
+    if not target_key:
+        return False, f"Пользователь с UID {uid} не найден"
 
-    base_email = user.get("email")
-
+    base_email = users[target_key].get("email")
     if not base_email:
-        return False, "Email not found"
+        return False, "Email не найден"
 
     deleted = 0
-
     for inbound_id in XUI_INBOUND_IDS:
-
         email = f"{base_email}@inbound{inbound_id}"
-
         try:
-
             r = requests.post(
                 f"{XUI_URL}/panel/api/inbounds/{inbound_id}/delClientByEmail/{email}",
                 headers=headers,
                 timeout=15
             )
-
             if r.status_code == 200 and r.json().get("success"):
                 deleted += 1
-
         except Exception as e:
             print(f"Delete error: {e}")
 
-    # удаляем локально
-    del users[str(tg_id)]
-
+    # Удаляем из файла
+    del users[target_key]
     with open("users.json", "w", encoding="utf-8") as f:
         json.dump(users, f, ensure_ascii=False, indent=4)
 
-    blocked_users.discard(tg_id)
-    approved_users.discard(tg_id)
-    pending_requests.pop(tg_id, None)
-
-    return True, f"Удалено inbound'ов: {deleted}/{len(XUI_INBOUND_IDS)}"
-
-# Обработчик удаления
-def process_delete_user(message):
-
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    try:
-        tg_id = int(message.text.strip())
-    except:
-        return bot.send_message(message.chat.id, "Неверный TG_ID")
-
-    success, msg = delete_vpn_user(tg_id)
-
-    if success:
-        bot.send_message(message.chat.id, f"✅ {msg}")
-    else:
-        bot.send_message(message.chat.id, f"❌ {msg}")
+    return True, f"Удалено {deleted}/{len(XUI_INBOUND_IDS)} inbound'ов (UID: {uid})"
 
 # Получение статуса серверов
 def get_servers_status():
@@ -439,6 +413,30 @@ def send_instruction_video(chat_id):
     except Exception as e:
         print(f"Ошибка отправки видео: {e}")
         bot.send_message(chat_id, "Не удалось отправить видео-инструкцию. Используйте текстовую инструкцию выше.")
+
+# Сохранение пользователя через админку
+def save_user_for_unlimited(uid: int, email: str, sub_id: str):
+    """Сохраняет бессрочного пользователя в users.json"""
+    if os.path.exists("users.json"):
+        with open("users.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+    else:
+        data = {}
+
+    # Используем UID как ключ для бессрочных пользователей
+    key = f"uid_{uid}"
+    data[key] = {
+        "uid": uid,
+        "email": email,
+        "username": "unlimited",
+        "status": "approved",
+        "expiry_time": 0,
+        "sub_id": sub_id,
+        "tg_id": None  # явно указываем, что TG нет
+    }
+
+    with open("users.json", "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
 
 # Сохранение нового пользователя в файл
 def save_user(tg_id, uid, email=None, username=None, status="approved", expiry_time=None, sub_id=None):
@@ -1174,8 +1172,6 @@ def show_users(message):
 @bot.message_handler(func=lambda m:
     m.from_user.id == ADMIN_ID and m.text == "➕ Добавить пользователя")
 def ask_add_unlimited_user(message):
-    if not is_admin(message.from_user.id):
-        return
     msg = bot.send_message(
         message.chat.id,
         "➕ Введите **Email** для бессрочного пользователя:\n"
@@ -1189,39 +1185,115 @@ def process_add_unlimited_by_email(message):
         return
 
     email = message.text.strip().lower()
+    if "@" not in email:
+        return bot.send_message(message.chat.id, "❌ Некорректный email.")
 
-    success, error_msg, base_name, sub_id = create_unlimited_by_email(email)
+    success, error_msg, base_name, uid, sub_id = create_unlimited_by_email(email)
 
     if success:
         sub_link = f"{XUI_SUB_LINK}/{sub_id}"
-
         bot.send_message(
             message.chat.id,
             f"✅ Бессрочный пользователь успешно создан!\n\n"
+            f"🆔 UID: <b>{uid}</b>\n"
             f"📧 Email: <code>{base_name}</code>\n"
-            f"🔗 Ссылка на подписку:\n"
-            f"<code>{sub_link}</code>",
+            f"🔗 Ссылка:\n<code>{sub_link}</code>",
             parse_mode="HTML"
         )
     else:
-        bot.send_message(
-            message.chat.id,
-            f"❌ Ошибка создания пользователя\n{error_msg}"
-        )
+        bot.send_message(message.chat.id, f"❌ Ошибка:\n{error_msg}")
+
+# Удаление по UID
+def delete_vpn_user_by_uid(uid: int):
+    if not os.path.exists("users.json"):
+        return False, "users.json not found"
+
+    with open("users.json", "r", encoding="utf-8") as f:
+        users = json.load(f)
+
+    # Ищем пользователя по UID
+    target_key = None
+    for key, info in users.items():
+        if info.get("uid") == uid:
+            target_key = key
+            break
+
+    if not target_key:
+        return False, f"Пользователь с UID {uid} не найден"
+
+    base_email = users[target_key].get("email")
+    if not base_email:
+        return False, "Email не найден"
+
+    deleted = 0
+    for inbound_id in XUI_INBOUND_IDS:
+        email = f"{base_email}@inbound{inbound_id}"
+        try:
+            r = requests.post(
+                f"{XUI_URL}/panel/api/inbounds/{inbound_id}/delClientByEmail/{email}",
+                headers=headers,
+                timeout=15
+            )
+            if r.status_code == 200 and r.json().get("success"):
+                deleted += 1
+        except Exception as e:
+            print(f"Delete error: {e}")
+
+    # Удаляем из файла
+    del users[target_key]
+    with open("users.json", "w", encoding="utf-8") as f:
+        json.dump(users, f, ensure_ascii=False, indent=4)
+
+    return True, f"Удалено {deleted}/{len(XUI_INBOUND_IDS)} inbound'ов (UID: {uid})"
+
 
 @bot.message_handler(func=lambda m:
-    m.from_user.id == ADMIN_ID and
-    m.text == "🗑 Удалить пользователя"
-)
+    m.from_user.id == ADMIN_ID and m.text == "🗑 Удалить пользователя")
 def ask_delete_user(message):
-    if not is_admin(message.from_user.id):
-        return
     msg = bot.send_message(
         message.chat.id,
-        "Введите TG_ID:"
+        "🗑 Введите **UID** пользователя для удаления:"
     )
+    bot.register_next_step_handler(msg, process_delete_by_uid)
 
-    bot.register_next_step_handler(msg, process_delete_user)
+
+def process_delete_by_uid(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        uid = int(message.text.strip())
+    except:
+        return bot.send_message(message.chat.id, "❌ Неверный UID. Введите число.")
+
+    success, msg = delete_vpn_user_by_uid(uid)
+    if success:
+        bot.send_message(message.chat.id, f"✅ {msg}")
+    else:
+        bot.send_message(message.chat.id, f"❌ {msg}")
+
+@bot.message_handler(func=lambda m:
+    m.from_user.id == ADMIN_ID and m.text == "🗑 Удалить пользователя")
+def ask_delete_user(message):
+    msg = bot.send_message(
+        message.chat.id,
+        "🗑 Введите **UID** пользователя для удаления:"
+    )
+    bot.register_next_step_handler(msg, process_delete_by_uid)
+
+
+def process_delete_by_uid(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        uid = int(message.text.strip())
+    except:
+        return bot.send_message(message.chat.id, "❌ Неверный UID. Введите число.")
+
+    success, msg = delete_vpn_user_by_uid(uid)
+    if success:
+        bot.send_message(message.chat.id, f"✅ {msg}")
+    else:
+        bot.send_message(message.chat.id, f"❌ {msg}")
 
 @bot.message_handler(func=lambda m:
     m.from_user.id == ADMIN_ID and
