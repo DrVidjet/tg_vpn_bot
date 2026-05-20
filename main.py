@@ -1124,34 +1124,30 @@ def show_users(message):
         users = json.load(f)
 
     online_clients = get_online_clients()
-
     result = "👥 Пользователи:\n\n"
 
-    for tg_id, info in users.items():
-
+    for key, info in users.items():
         username = info.get("username", "no_username")
         uid = info.get("uid", "-")
         status = info.get("status", "unknown")
         expiry = info.get("expiry_time", 0)
-        email = info.get("email")
+        email = info.get("email", "—")
 
-        expiry_date = datetime.datetime.fromtimestamp(
+        tg_id = key if not key.startswith("uid_") else "— (бессрочно)"
+
+        expiry_date = "БЕССРОЧНО" if expiry == 0 else datetime.datetime.fromtimestamp(
             expiry / 1000
         ).strftime("%d.%m.%Y")
 
         online = False
-
         if email:
             for inbound_id in XUI_INBOUND_IDS:
-
                 check_email = f"{email}@inbound{inbound_id}"
-
                 if check_email in online_clients:
                     online = True
                     break
 
         up, down = get_user_traffic(email)
-
         up_gb = round(up / (1024**3), 2)
         down_gb = round(down / (1024**3), 2)
 
@@ -1159,13 +1155,16 @@ def show_users(message):
             f"UID: {uid}\n"
             f"TG_ID: {tg_id}\n"
             f"USER: @{username}\n"
+            f"EMAIL: {email}\n"
             f"STATUS: {status}\n"
             f"ONLINE: {'🟢' if online else '🔴'}\n"
             f"UP: {up_gb} GB\n"
             f"DOWN: {down_gb} GB\n"
-            f"EXPIRE: {expiry_date}\n\n"
+            f"EXPIRE: {expiry_date}\n"
+            f"{'─' * 30}\n\n"
         )
 
+    # Отправляем частями, если слишком длинное сообщение
     for i in range(0, len(result), 4000):
         bot.send_message(message.chat.id, result[i:i+4000])
 
