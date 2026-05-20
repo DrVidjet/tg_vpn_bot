@@ -718,7 +718,7 @@ def admin_panel():
 # ====================== Деньги =======================
 
 # Сохранение платежа для отчета
-def save_payment(tg_id: int, amount: int, months: int, payment_type: str, username: str = None):
+def save_payment(tg_id: int, amount: int, months: int, payment_type: str, username: str = None, email: str = None)):
     """Сохраняет платеж в pay.json"""
     if os.path.exists(PAYMENTS_FILE):
         with open(PAYMENTS_FILE, "r", encoding="utf-8") as f:
@@ -732,6 +732,7 @@ def save_payment(tg_id: int, amount: int, months: int, payment_type: str, userna
         "date": now.strftime("%Y-%m-%d %H:%M:%S"),
         "tg_id": tg_id,
         "username": username or "unknown",
+        "email": email or "—",
         "amount": amount,
         "months": months,
         "type": payment_type,   # "new" или "renew"
@@ -765,7 +766,12 @@ def get_monthly_report():
     text += "Последние платежи:\n"
 
     for p in sorted(month_payments, key=lambda x: x["date"], reverse=True)[:15]:
-        text += f"• {p['date'][:16]} | {p['amount']}₽ | {p.get('username','—')} ({p['type']})\n"
+        text += (
+            f"• {p['date'][:16]} | "
+            f"{p['amount']}₽ | "
+            f"{p.get('email', '—')} "
+            f"({p['type']})\n"
+        )
 
     return text
 
@@ -1095,7 +1101,7 @@ def admin_actions(call):
     if not is_admin(call.from_user.id):
         return
     try:
-            bot.delete_message(chat_id, loading_message_id)
+        bot.delete_message(call.message.chat_id, call.message.message_id)
     except:
         pass
     # Если заявки уже нет
@@ -1122,7 +1128,7 @@ def admin_actions(call):
                 # === ЗАПИСЬ ПЛАТЕЖА ===
                 months = data.get("months", 1)
                 amount = PRICE_PER_MONTH * months
-                save_payment(tg_id, amount, months, "new", username)
+                save_payment(tg_id, amount, months, "new", username, base_name)
                 sub_link = f"{XUI_SUB_LINK}/{sub_id}"
 
                 bot.send_message(call.message.chat.id, f"✅ Пользователь {tg_id} успешно создан в 3x-ui")
@@ -1181,7 +1187,7 @@ def admin_actions(call):
 
                 # === ЗАПИСЬ ПЛАТЕЖА ===
                 amount = PRICE_PER_MONTH * months
-                save_payment(tg_id, amount, months, "renew", username)
+                save_payment(tg_id, amount, months, "renew", username, email)
 
                 bot.send_message(call.message.chat.id, f"✅ Продление для {tg_id} успешно")
                 sub(tg_id, call.message)
