@@ -944,8 +944,7 @@ def handle_paid(call):
     bot.send_message(
         tg_id,
         f"⏳ Заявка отправлена на проверку оплаты.\n\n"
-        "Обычно проверка занимает от 1 до 15 минут.",
-        reply_markup=main_menu()
+        "Обычно проверка занимает от 1 до 15 минут."
     )
     bot.answer_callback_query(call.id)
 
