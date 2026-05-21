@@ -1285,7 +1285,7 @@ def admin_add_by_email_step(message, period_type):
                 f"🆔 UID: {uid}\n"
                 f"📧 Email: {base_name}\n"
                 f"🔗 Ссылка:\n{sub_link}\n\n",
-                f"Действует до: {expiry_ms}"
+                f"Действует до: {expiry_ms}",
                 parse_mode="HTML"
             )
         else:
@@ -1310,7 +1310,7 @@ def admin_add_multi_by_email(message, email):
                 f"🆔 UID: {uid}\n"
                 f"📧 Email: {base_name}\n\n"
                 f"🔗 Ссылка:\n{sub_link}\n\n",
-                f"Действует до: {expiry_ms}"
+                f"Действует до: {expiry_ms}",
                 parse_mode="HTML"
             )
         else:
