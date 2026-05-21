@@ -491,37 +491,6 @@ def save_user(tg_id, uid, email=None, username=None, status="approved", expiry_t
 
 # ====================== Работа с tg =======================
 
-# Первичный оффер
-def ask_vpn_offer(chat_id):
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(types.InlineKeyboardButton("💳 Оплатить 1 месяц", callback_data="pay:1"))
-    markup.add(types.InlineKeyboardButton("💳 Оплатить несколько месяцев", callback_data="pay:multi"))
-
-    bot.send_message(
-        chat_id,
-        "🔥 <b>Добро пожаловать в VidjetVPN</b> 🔥\n\n"
-        "🌍 <b>Доступные серверы:</b>\n"
-        "• 🇸🇪 Стокгольм ×2\n"
-        "• 🇫🇮 Хельсинки ×1\n"
-        "• 🇩🇪 Берлин ×1\n\n"
-        "🏴‍☠ Интернет в этих регионах свободный, без ограничений!\n\n"
-        "⚡ <b>Преимущества:</b>\n"
-        "• Без ограничений по трафику\n"
-        "• Высокая скорость соединения\n"
-        "• Стабильная работа\n"
-        "• 3 устройства на одной подписке\n"
-        "• Демократичная цена\n"
-        "• Прямая линия с поддержкой\n\n"
-        "📦 <b>После оплаты вы получите:</b>\n"
-        "• Конфиг для подключения\n"
-        "• Пошаговую инструкцию\n\n"
-        "💰 <b>Цена:</b>\n"
-        f"{PRICE_PER_MONTH}₽ / месяц и использование на 3 устройствах\n\n"
-        "❓ <b>Оформляем?</b>",
-        parse_mode="HTML",
-        reply_markup=markup
-    )
-
 # Генерация QR из ссылки
 def generate_qr_image(url: str):
     qr = qrcode.QRCode(box_size=10, border=2)
@@ -1047,6 +1016,37 @@ def start_handler(message):
 
     ask_vpn_offer(message.chat.id)
 
+# Первичный оффер
+def ask_vpn_offer(chat_id):
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(types.InlineKeyboardButton("💳 Оплатить 1 месяц", callback_data="pay:1"))
+    markup.add(types.InlineKeyboardButton("💳 Оплатить несколько месяцев", callback_data="pay:multi"))
+
+    bot.send_message(
+        chat_id,
+        "🔥 <b>Добро пожаловать в VidjetVPN</b> 🔥\n\n"
+        "🌍 <b>Доступные серверы:</b>\n"
+        "• 🇸🇪 Стокгольм ×2\n"
+        "• 🇫🇮 Хельсинки ×1\n"
+        "• 🇩🇪 Берлин ×1\n\n"
+        "🏴‍☠ Интернет в этих регионах свободный, без ограничений!\n\n"
+        "⚡ <b>Преимущества:</b>\n"
+        "• Без ограничений по трафику\n"
+        "• Высокая скорость соединения\n"
+        "• Стабильная работа\n"
+        "• 3 устройства на одной подписке\n"
+        "• Демократичная цена\n"
+        "• Прямая линия с поддержкой\n\n"
+        "📦 <b>После оплаты вы получите:</b>\n"
+        "• Конфиг для подключения\n"
+        "• Пошаговую инструкцию\n\n"
+        "💰 <b>Цена:</b>\n"
+        f"{PRICE_PER_MONTH}₽ / месяц и использование на 3 устройствах\n\n"
+        "❓ <b>Оформляем?</b>",
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("offer:"))
 def handle_offer_response(call):
     _, answer, tg_id_str = call.data.split(":")
@@ -1253,7 +1253,7 @@ def admin_add_unlimited_by_email(message):
             f"✅ Бессрочный пользователь успешно создан!\n\n"
             f"🆔 UID: {uid}\n"
             f"📧 Email: {base_name}\n"
-            f"🔗 Ссылка:\n{sub_link}",
+            f"🔗 Ссылка на подписку:\n\n<code>{sub_link}</code>\n\n",
             parse_mode="HTML"
         )
     else:
@@ -1284,7 +1284,7 @@ def admin_add_by_email_step(message, period_type):
                 f"✅ Пользователь успешно создан на 1 месяц!\n\n"
                 f"🆔 UID: {uid}\n"
                 f"📧 Email: {base_name}\n"
-                f"🔗 Ссылка:\n{sub_link}\n\n"
+                f"🔗 Ссылка на подписку:\n\n<code>{sub_link}</code>\n\n"
                 f"Действует до: {expiry_ms}",
                 parse_mode="HTML"
             )
@@ -1309,7 +1309,7 @@ def admin_add_multi_by_email(message, email):
                 f"✅ Пользователь успешно создан на {months} месяцев!\n\n"
                 f"🆔 UID: {uid}\n"
                 f"📧 Email: {base_name}\n\n"
-                f"🔗 Ссылка:\n{sub_link}\n\n"
+                f"🔗 Ссылка на подписку:\n\n<code>{sub_link}</code>\n\n"
                 f"Действует до: {expiry_ms}",
                 parse_mode="HTML"
             )
