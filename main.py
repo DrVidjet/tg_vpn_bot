@@ -1236,77 +1236,107 @@ def admin_add_choice(call):
         msg = bot.send_message(call.message.chat.id, "Введите Email для бессрочного пользователя:")
         bot.register_next_step_handler(msg, process_add_unlimited_by_email)
     else:
-        msg = bot.send_message(call.message.chat.id, "Введите TG ID пользователя:")
-        bot.register_next_step_handler(msg, admin_add_step2, action)
+        msg = bot.send_message(call.message.chat.id, "Введите Email для нового пользователя:")
+        bot.register_next_step_handler(msg, admin_add_by_email_step, action)
+
     bot.answer_callback_query(call.id)
 
 
-def admin_add_step2(message, period_type):
+def admin_add_by_email_step(message, period_type):
+    email = message.text.strip().lower()
+    if not email:
+        bot.send_message(message.chat.id, "❌ Email не может быть пустым.")
+        return
+
     try:
-        tg_id = int(message.text.strip())
-        if period_type == "1":
-            success, error_msg, base_name, expiry_ms, sub_id = create_vpn_client(tg_id, "admin_added", months=1)
-            if success:
-                save_user(tg_id, get_or_create_uid(tg_id), base_name, "admin_added", "approved", expiry_ms, sub_id)
-                bot.send_message(message.chat.id, f"✅ Пользователь {tg_id} добавлен на 1 месяц.")
-                admin_notify(tg_id, "admin_added", base_name, 1, PRICE_PER_MONTH*100, "Добавлен админом (1 мес)")
-        else:
+        months = 1 if period_type == "1" else None
+
+        if months is None:  # несколько месяцев
             msg = bot.send_message(message.chat.id, "Введите количество месяцев (1-12):")
-            bot.register_next_step_handler(msg, admin_add_multi_months, tg_id)
-    except:
-        bot.send_message(message.chat.id, "❌ Неверный TG ID")
+            bot.register_next_step_handler(msg, admin_add_multi_by_email, email)
+            return
+
+        # Добавление на 1 месяц
+        success, error_msg, base_name, expiry_ms, sub_id = create_vpn_client(0, email, months=1)
+        if success:
+            uid = get_or_create_uid()  # создаём новый UID
+            save_user_for_admin(uid, base_name, sub_id, expiry_ms)  # новая функция
+            bot.send_message(message.chat.id, f"✅ Пользователь успешно добавлен на 1 месяц.\nEmail: {base_name}\nUID: {uid}")
+        else:
+            bot.send_message(message.chat.id, f"❌ Ошибка создания: {error_msg}")
+    except Exception as e:
+        bot.send_message(message.chat.id, "❌ Произошла ошибка.")
 
 
-def admin_add_multi_months(message, tg_id):
+def admin_add_multi_by_email(message, email):
     try:
         months = int(message.text.strip())
         if months < 1 or months > 12:
             raise ValueError
-        success, error_msg, base_name, expiry_ms, sub_id = create_vpn_client(tg_id, "admin_added", months)
+
+        success, error_msg, base_name, expiry_ms, sub_id = create_vpn_client(0, email, months)
         if success:
-            save_user(tg_id, get_or_create_uid(tg_id), base_name, "admin_added", "approved", expiry_ms, sub_id)
-            bot.send_message(message.chat.id, f"✅ Пользователь {tg_id} добавлен на {months} месяцев.")
-            admin_notify(tg_id, "admin_added", base_name, months, PRICE_PER_MONTH*months*100, f"Добавлен админом ({months} мес)")
+            uid = get_or_create_uid()
+            save_user_for_admin(uid, base_name, sub_id, expiry_ms)
+            bot.send_message(message.chat.id, f"✅ Пользователь успешно добавлен на {months} месяцев.\nEmail: {base_name}\nUID: {uid}")
+        else:
+            bot.send_message(message.chat.id, f"❌ Ошибка: {error_msg}")
     except:
-        bot.send_message(message.chat.id, "❌ Введите корректное число месяцев.")
+        bot.send_message(message.chat.id, "❌ Введите корректное число месяцев (1-12).")
+
+# Сохраняет пользователя, добавленного админом
+def save_user_for_admin(uid: int, email: str, sub_id: str, expiry_time):
+    if os.path.exists("users.json"):
+        with open("users.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+    else:
+        data = {}
+
+    key = f"uid_{uid}"
+    data[key] = {
+        "uid": uid,
+        "email": email,
+        "username": "admin_added",
+        "status": "approved",
+        "expiry_time": expiry_time,
+        "sub_id": sub_id,
+        "tg_id": None
+    }
+
+    with open("users.json", "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
 
 # ==================== ПРОДЛЕНИЕ ПОЛЬЗОВАТЕЛЯ ====================
-@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "🔄 Продлить пользователю")
+@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "🔄 Продлить по UID")
 def ask_renew_by_admin(message):
-    msg = bot.send_message(message.chat.id, "Введите TG ID или UID пользователя для продления:")
+    msg = bot.send_message(message.chat.id, "Введите UID пользователя для продления:")
     bot.register_next_step_handler(msg, admin_renew_step1)
 
 
 def admin_renew_step1(message):
     try:
-        user_input = message.text.strip()
-        # Можно искать и по TG ID и по UID, но упростим — пока по TG ID
-        tg_id = int(user_input)
+        uid = int(message.text.strip())
         markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(types.InlineKeyboardButton("📅 Продлить на 1 месяц", callback_data=f"admin_renew:1:{tg_id}"))
-        markup.add(types.InlineKeyboardButton("📅 Продлить на несколько месяцев", callback_data=f"admin_renew:multi:{tg_id}"))
-        bot.send_message(message.chat.id, f"Продлеваем пользователя {tg_id}:", reply_markup=markup)
+        markup.add(types.InlineKeyboardButton("📅 Продлить на 1 месяц", callback_data=f"admin_renew:1:{uid}"))
+        markup.add(types.InlineKeyboardButton("📅 Продлить на несколько месяцев", callback_data=f"admin_renew:multi:{uid}"))
+        bot.send_message(message.chat.id, f"Продлеваем пользователя с UID {uid}:", reply_markup=markup)
     except:
-        bot.send_message(message.chat.id, "❌ Неверный ID")
+        bot.send_message(message.chat.id, "❌ Введите корректный UID (число).")
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_renew:"))
 def admin_renew_choice(call):
-    _, period, tg_id_str = call.data.split(":")
-    tg_id = int(tg_id_str)
+    _, period, uid_str = call.data.split(":")
+    uid = int(uid_str)
 
     if period == "1":
-        success, error_msg, email, expiry_ms = renew_vpn_client(tg_id, months=1)
-        if success:
-            bot.send_message(call.message.chat.id, f"✅ Продлено на 1 месяц (TG: {tg_id})")
-            admin_notify(tg_id, "admin", email, 1, PRICE_PER_MONTH*100, "Продление админом")
-        else:
-            bot.send_message(call.message.chat.id, "❌ Ошибка продления")
+        # Нужно найти tg_id или email по UID
+        success, msg = renew_by_uid(uid, months=1)
+        bot.send_message(call.message.chat.id, msg)
     else:
         msg = bot.send_message(call.message.chat.id, "Введите количество месяцев:")
-        bot.register_next_step_handler(msg, admin_renew_multi, tg_id)
+        bot.register_next_step_handler(msg, admin_renew_multi, uid)
     bot.answer_callback_query(call.id)
-
 
 def admin_renew_multi(message, tg_id):
     try:
