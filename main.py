@@ -117,12 +117,12 @@ def create_vpn_client(tg_id: int, username: str = None, months: int = 1):
         return False, f"Успешно {success_count}/{len(XUI_INBOUND_IDS)} inbound'ов", base_name, expiry_ms, sub_id
 
 # Продление клиента
-def renew_vpn_client(uid:int, tg_id: int, username: str = None, months: int = 1):
+def renew_vpn_client(tg_id: int, username: str = None, months: int = 1):
     try:
         with open("users.json", "r", encoding="utf-8") as f:
             users = json.load(f)
         extra_days = XUI_EXPIRY_DAYS * months
-        user_data = users.get(str(uid))
+        user_data = users.get(str(tg_id))
         if not user_data or not user_data.get("email"):
             return False, "Email пользователя не найден в users.json", None, None
 
@@ -455,7 +455,7 @@ def save_user(tg_id, uid, email=None, username=None, status="approved", expiry_t
     else:
         data = {}
 
-    key = str(uid)
+    key = str(tg_id)
 
     if key in data:
         current = data[key]
@@ -561,9 +561,9 @@ def load_users():
         uid = info.get("uid")
         status = info.get("status")
 
-        # Обычный пользователь (ключ = uid)
+        # Обычный пользователь (ключ = TG_ID)
         if key.isdigit():
-            uid = int(key)
+            tg_id = int(key)
             if uid is not None:
                 user_ids[tg_id] = uid
                 if uid > max_uid:
@@ -610,7 +610,7 @@ def get_user_link(tg_id, username):
         return f"tg://user?id={tg_id}"
 
 # Информация о подписке
-def sub(uid, message):
+def sub(tg_id, message):
     try:
             if not os.path.exists("users.json"):
                 bot.send_message(message.chat.id, "❌ Данные подписки не найдены.")
@@ -619,7 +619,7 @@ def sub(uid, message):
             with open("users.json", "r", encoding="utf-8") as f:
                 users = json.load(f)
 
-            user_data = users.get(str(uid))
+            user_data = users.get(str(tg_id))
 
             if not user_data:
                 bot.send_message(message.chat.id, "❌ Подписка не найдена.")
@@ -860,7 +860,7 @@ def successful_payment(message):
     tg_id = message.chat.id
     payment = message.successful_payment
     data = pending_requests.get(tg_id, {})
-    uid = get_or_create_uid(tg_id)
+
     months = data.get("months", 1)
     flow = data.get("flow", "new")   # "new" или "renew"
     username = message.from_user.username or "no_username"
@@ -872,6 +872,7 @@ def successful_payment(message):
         success, error_msg, base_name, expiry_ms, sub_id = create_vpn_client(tg_id, username, months)
 
         if success:
+            uid = get_or_create_uid(tg_id)
             save_user(tg_id, uid, base_name, username, "approved", expiry_ms, sub_id)
 
             sub_link = f"{XUI_SUB_LINK}/{sub_id}"
@@ -921,7 +922,7 @@ def successful_payment(message):
 
     else:
         # === ПРОДЛЕНИЕ ===
-        success, error_msg, email, expiry_ms = renew_vpn_client(uid, tg_id, username, months)
+        success, error_msg, email, expiry_ms = renew_vpn_client(tg_id, username, months)
 
         if success:
             save_user(tg_id, get_or_create_uid(tg_id), email, username, "approved", expiry_ms)
@@ -935,7 +936,7 @@ def successful_payment(message):
                 parse_mode="HTML",
                 reply_markup=main_menu()
             )
-            sub(uid, message)   # отправляем актуальную информацию о подписке
+            sub(tg_id, message)   # отправляем актуальную информацию о подписке
 
         else:
             bot.send_message(tg_id, "❌ Ошибка продления подписки. 👤 Если вы уверены, что это ошибка, напишите сюда: {SUPPORT}\n⏱ Мы ответим вам как можно скорее.")
@@ -946,7 +947,6 @@ def successful_payment(message):
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     tg_id = message.from_user.id
-    uid = get_or_create_uid(tg_id)
     loading_msg = bot.send_message(message.chat.id, "⌛", reply_markup=types.ReplyKeyboardRemove())
 
     if tg_id in blocked_users:
@@ -959,7 +959,7 @@ def start_handler(message):
             with open("users.json", "r", encoding="utf-8") as f:
                 users = json.load(f)
 
-            user_data = users.get(str(uid))
+            user_data = users.get(str(tg_id))
         except:
             user_data = None
 
@@ -1017,7 +1017,6 @@ def handle_offer_response(call):
 def menu_handler(message):
     tg_id = message.from_user.id
     text = message.text.strip()
-    uid = get_or_create_uid(tg_id)
 
     if tg_id in blocked_users:
         return
@@ -1037,7 +1036,7 @@ def menu_handler(message):
             return
 
     if text == "📦 Моя подписка":
-        sub(uid, message)
+        sub(tg_id, message)
     elif text == "🔄 Продлить подписку":
         pending_requests[tg_id] = {"flow": "renew"}
         markup = types.InlineKeyboardMarkup(row_width=1)
