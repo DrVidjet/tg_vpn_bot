@@ -13,6 +13,8 @@ import uuid
 from zoneinfo import ZoneInfo
 from yookassa import Configuration, Payment
 from datetime import datetime, timedelta
+import time
+import threading
 
 # ====================== КОНФИГУРАЦИЯ ======================
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'API.conf')
@@ -489,37 +491,6 @@ def save_user(tg_id, uid, email=None, username=None, status="approved", expiry_t
 
 # ====================== Работа с tg =======================
 
-# Первичный оффер
-def ask_vpn_offer(chat_id):
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(types.InlineKeyboardButton("💳 Оплатить 1 месяц", callback_data="pay:1"))
-    markup.add(types.InlineKeyboardButton("💳 Оплатить несколько месяцев", callback_data="pay:multi"))
-
-    bot.send_message(
-        chat_id,
-        "🔥 <b>Добро пожаловать в VidjetVPN</b> 🔥\n\n"
-        "🌍 <b>Доступные серверы:</b>\n"
-        "• 🇸🇪 Стокгольм ×2\n"
-        "• 🇫🇮 Хельсинки ×1\n"
-        "• 🇩🇪 Берлин ×1\n\n"
-        "🏴‍☠ Интернет в этих регионах свободный, без ограничений!\n\n"
-        "⚡ <b>Преимущества:</b>\n"
-        "• Без ограничений по трафику\n"
-        "• Высокая скорость соединения\n"
-        "• Стабильная работа\n"
-        "• 3 устройства на одной подписке\n"
-        "• Демократичная цена\n"
-        "• Прямая линия с поддержкой\n\n"
-        "📦 <b>После оплаты вы получите:</b>\n"
-        "• Конфиг для подключения\n"
-        "• Пошаговую инструкцию\n\n"
-        "💰 <b>Цена:</b>\n"
-        f"{PRICE_PER_MONTH}₽ / месяц и использование на 3 устройствах\n\n"
-        "❓ <b>Оформляем?</b>",
-        parse_mode="HTML",
-        reply_markup=markup
-    )
-
 # Генерация QR из ссылки
 def generate_qr_image(url: str):
     qr = qrcode.QRCode(box_size=10, border=2)
@@ -715,6 +686,62 @@ def admin_notify(tg_id: int, username: str, email: str, months: int, amount: int
     except Exception as e:
         print(f"Не удалось отправить уведомление админу: {e}")
 
+# Уведомления пользователям об истекающих подписках
+def check_expiring_subscriptions():
+    while True:
+        try:
+            now = datetime.now(ZoneInfo("Europe/Moscow"))
+
+            # Запускаем проверку только в 12:00 ± 1 минута
+            if now.hour == 12 and now.minute < 2:
+                if os.path.exists("users.json"):
+                    with open("users.json", "r", encoding="utf-8") as f:
+                        users = json.load(f)
+
+                    current_time = now.timestamp() * 1000
+
+                    for tg_id_str, data in users.items():
+                        if not tg_id_str.isdigit():
+                            continue
+                        tg_id = int(tg_id_str)
+                        expiry = data.get("expiry_time")
+                        if not expiry or expiry == 0:  # бессрочные
+                            continue
+
+                        days_left = (expiry - current_time) / (86400 * 1000)
+
+                        if 2.8 < days_left < 3.2:   # ~за 3 дня
+                            try:
+                                bot.send_message(
+                                    tg_id,
+                                    "⚠️ <b>Ваша подписка заканчивается через 3 дня!</b>\n\n"
+                                    "Не забудьте продлить, чтобы не потерять доступ.",
+                                    parse_mode="HTML"
+                                )
+                            except:
+                                pass
+
+                        elif -0.2 < days_left < 0.8:   # в день окончания
+                            try:
+                                bot.send_message(
+                                    tg_id,
+                                    "❗️ <b>Ваша подписка сегодня заканчивается!</b>\n\n"
+                                    "Продлите подписку, чтобы продолжить пользоваться VPN.",
+                                    parse_mode="HTML"
+                                )
+                            except:
+                                pass
+
+            time.sleep(60)  # проверяем каждую минуту
+
+        except Exception as e:
+            print(f"Ошибка проверки истекающих подписок: {e}")
+            time.sleep(300)
+
+def start_expiry_checker():
+    thread = threading.Thread(target=check_expiring_subscriptions, daemon=True)
+    thread.start()
+
 
 
 # ====================== Кнопки/меню =======================
@@ -741,6 +768,7 @@ def admin_panel():
 
     markup.add("👥 Пользователи")
     markup.add("➕ Добавить пользователя")
+    markup.add("🔄 Продлить пользователя")
     markup.add("🗑 Удалить пользователя")
     markup.add("📊 Отчет по оплатам")
     markup.add("🖥 Статус серверов")
@@ -831,6 +859,80 @@ def get_payments_report(days: int = 30):
 # =======================================================
 # ====================== ХЭНДЛЕРЫ ======================
 # =======================================================
+
+@bot.message_handler(commands=['start'])
+def start_handler(message):
+    tg_id = message.from_user.id
+    loading_msg = bot.send_message(message.chat.id, "⌛", reply_markup=types.ReplyKeyboardRemove())
+
+    if tg_id in blocked_users:
+        return
+
+    user_data = None
+
+    if os.path.exists("users.json"):
+        try:
+            with open("users.json", "r", encoding="utf-8") as f:
+                users = json.load(f)
+
+            user_data = users.get(str(tg_id))
+        except:
+            user_data = None
+
+    if user_data and user_data.get("status") == "approved":
+        try:
+            bot.delete_message(message.chat.id, loading_msg.message_id)
+        except:
+            pass
+
+        bot.send_message(
+            message.chat.id,
+            "Добро пожаловать 👇",
+            reply_markup=main_menu()
+        )
+        return
+
+    if tg_id in pending_requests:
+        try:
+            bot.delete_message(message.chat.id, loading_msg.message_id)
+        except:
+            pass
+
+        bot.send_message(message.chat.id, "🕚 Жду подтверждения")
+        return
+
+    ask_vpn_offer(message.chat.id)
+
+# Первичный оффер
+def ask_vpn_offer(chat_id):
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(types.InlineKeyboardButton("💳 Оплатить 1 месяц", callback_data="pay:1"))
+    markup.add(types.InlineKeyboardButton("💳 Оплатить несколько месяцев", callback_data="pay:multi"))
+
+    bot.send_message(
+        chat_id,
+        "🔥 <b>Добро пожаловать в VidjetVPN</b> 🔥\n\n"
+        "🌍 <b>Доступные серверы:</b>\n"
+        "• 🇸🇪 Стокгольм ×2\n"
+        "• 🇫🇮 Хельсинки ×1\n"
+        "• 🇩🇪 Берлин ×1\n\n"
+        "🏴‍☠ Интернет в этих регионах свободный, без ограничений!\n\n"
+        "⚡ <b>Преимущества:</b>\n"
+        "• Без ограничений по трафику\n"
+        "• Высокая скорость соединения\n"
+        "• Стабильная работа\n"
+        "• 3 устройства на одной подписке\n"
+        "• Демократичная цена\n"
+        "• Прямая линия с поддержкой\n\n"
+        "📦 <b>После оплаты вы получите:</b>\n"
+        "• Конфиг для подключения\n"
+        "• Пошаговую инструкцию\n\n"
+        "💰 <b>Цена:</b>\n"
+        f"{PRICE_PER_MONTH}₽ / месяц и использование на 3 устройствах\n\n"
+        "❓ <b>Оформляем?</b>",
+        parse_mode="HTML",
+        reply_markup=markup
+    )
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("pay:"))
 def handle_pay_choice(call):
@@ -943,49 +1045,6 @@ def successful_payment(message):
             bot.send_message(ADMIN_ID, f"⚠️ Ошибка продления!\nTG: @{username} ({tg_id})\n{error_msg}")
 
     pending_requests.pop(tg_id, None)
-
-@bot.message_handler(commands=['start'])
-def start_handler(message):
-    tg_id = message.from_user.id
-    loading_msg = bot.send_message(message.chat.id, "⌛", reply_markup=types.ReplyKeyboardRemove())
-
-    if tg_id in blocked_users:
-        return
-
-    user_data = None
-
-    if os.path.exists("users.json"):
-        try:
-            with open("users.json", "r", encoding="utf-8") as f:
-                users = json.load(f)
-
-            user_data = users.get(str(tg_id))
-        except:
-            user_data = None
-
-    if user_data and user_data.get("status") == "approved":
-        try:
-            bot.delete_message(message.chat.id, loading_msg.message_id)
-        except:
-            pass
-
-        bot.send_message(
-            message.chat.id,
-            "Добро пожаловать 👇",
-            reply_markup=main_menu()
-        )
-        return
-
-    if tg_id in pending_requests:
-        try:
-            bot.delete_message(message.chat.id, loading_msg.message_id)
-        except:
-            pass
-
-        bot.send_message(message.chat.id, "🕚 Жду подтверждения")
-        return
-
-    ask_vpn_offer(message.chat.id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("offer:"))
 def handle_offer_response(call):
@@ -1224,6 +1283,7 @@ if __name__ == '__main__':
     try:
         load_users()
         print("Bot successfully started")
+        start_expiry_checker()
         bot.infinity_polling(skip_pending=True)
     except Exception as e:
         print(f"Fatal error: {e}")
