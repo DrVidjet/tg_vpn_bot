@@ -1279,13 +1279,15 @@ def admin_add_by_email_step(message, period_type):
             uid = get_or_create_uid()  # создаём новый UID
             save_user_for_admin(uid, base_name, sub_id, expiry_ms)  # новая функция
             sub_link = f"{XUI_SUB_LINK}/{sub_id}"
+            expiry_date = datetime.fromtimestamp(expiry_ms / 1000).strftime("%d.%m.%Y %H:%M")
+
             bot.send_message(
                 message.chat.id,
                 f"✅ Пользователь успешно создан на 1 месяц!\n\n"
                 f"🆔 UID: {uid}\n"
                 f"📧 Email: {base_name}\n"
                 f"🔗 Ссылка на подписку:\n\n<code>{sub_link}</code>\n\n"
-                f"Действует до: {expiry_ms}",
+                f"Действует до: {expiry_date}",
                 parse_mode="HTML"
             )
         else:
@@ -1301,22 +1303,30 @@ def admin_add_multi_by_email(message, email):
             raise ValueError
 
         success, error_msg, base_name, expiry_ms, sub_id = create_vpn_client(0, email, months)
+
         if success:
             uid = get_or_create_uid()
             save_user_for_admin(uid, base_name, sub_id, expiry_ms)
+            sub_link = f"{XUI_SUB_LINK}/{sub_id}"
+            expiry_date = datetime.fromtimestamp(expiry_ms / 1000).strftime("%d.%m.%Y %H:%M")
+
             bot.send_message(
                 message.chat.id,
                 f"✅ Пользователь успешно создан на {months} месяцев!\n\n"
                 f"🆔 UID: {uid}\n"
                 f"📧 Email: {base_name}\n\n"
                 f"🔗 Ссылка на подписку:\n\n<code>{sub_link}</code>\n\n"
-                f"Действует до: {expiry_ms}",
+                f"Действует до: {expiry_date}",
                 parse_mode="HTML"
             )
         else:
             bot.send_message(message.chat.id, f"❌ Ошибка: {error_msg}")
-    except:
+    except ValueError:
         bot.send_message(message.chat.id, "❌ Введите корректное число месяцев (1-12).")
+
+    except Exception as e:
+        print(f"admin_add_multi_by_email error: {e}")
+        bot.send_message(message.chat.id, f"❌ Ошибка:\n{e}")
 
 # Сохраняет пользователя, добавленного админом
 def save_user_for_admin(uid: int, email: str, sub_id: str, expiry_time):
