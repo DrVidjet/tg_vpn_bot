@@ -1284,7 +1284,7 @@ def admin_add_by_email_step(message, period_type):
                 f"✅ Пользователь успешно создан на 1 месяц!\n\n"
                 f"🆔 UID: {uid}\n"
                 f"📧 Email: {base_name}\n"
-                f"🔗 Ссылка:\n{sub_link}\n\n",
+                f"🔗 Ссылка:\n{sub_link}\n\n"
                 f"Действует до: {expiry_ms}",
                 parse_mode="HTML"
             )
@@ -1309,7 +1309,7 @@ def admin_add_multi_by_email(message, email):
                 f"✅ Пользователь успешно создан на {months} месяцев!\n\n"
                 f"🆔 UID: {uid}\n"
                 f"📧 Email: {base_name}\n\n"
-                f"🔗 Ссылка:\n{sub_link}\n\n",
+                f"🔗 Ссылка:\n{sub_link}\n\n"
                 f"Действует до: {expiry_ms}",
                 parse_mode="HTML"
             )
