@@ -6,10 +6,6 @@ GRUPP_LINK=""
 API=""
 
 # ================== Payment ==================
-TCARD_NUMBER="0000 0000 0000 0000"
-SCARD_NUMBER="0000 0000 0000 0000"
-ACARD_NUMBER="0000 0000 0000 0000"
-SBP_URL="https://example.com/sbp"
 PRICE_PER_MONTH=150
 
 # ================== X-UI / 3x-ui ==================
@@ -18,3 +14,8 @@ XUI_API_TOKEN=""
 XUI_SUB_LINK="https://example.com:1111/sub"
 XUI_INBOUND_IDS=1,2,3
 XUI_EXPIRY_DAYS=30
+
+[UKASSA]
+PROVIDER_TOKEN=""
+SHOP_ID=""
+SECRET_KEY=""

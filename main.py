@@ -10,8 +10,9 @@ import fcntl
 import json
 import requests
 import uuid
-import datetime
 from zoneinfo import ZoneInfo
+from yookassa import Configuration, Payment
+from datetime import datetime, timedelta
 
 # ====================== КОНФИГУРАЦИЯ ======================
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'API.conf')
@@ -24,6 +25,14 @@ ADMIN_ID = config.getint('DEFAULT', 'ADMIN_ID')
 SUPPORT = config.get('DEFAULT', 'SUPPORT_LINK').strip('"')
 GRUPP = config.get('DEFAULT', 'GRUPP_LINK').strip('"')
 PRICE_PER_MONTH = config.getint('DEFAULT', 'PRICE_PER_MONTH')
+
+# === ЮKassa Telegram Payments ===
+PROVIDER_TOKEN = config.get('UKASSA', 'PROVIDER_TOKEN').strip('"')
+YOOKASSA_SECRET_KEY = config.get('UKASSA', 'SECRET_KEY').strip('"')
+YOOKASSA_SHOP_ID = config.get('UKASSA', 'SHOP_ID').strip('"')
+
+if YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY:
+    Configuration.configure(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY)
 
 # Настройки X-UI
 XUI_URL = config.get('DEFAULT', 'XUI_URL').strip('"')
@@ -63,18 +72,15 @@ uid_counter = 1
 # ====================== Работа с 3x-ui =======================
 
 # Создание клиента
-def create_vpn_client(tg_id: int, username: str = None):
-    """Создаёт клиента во всех inbound'ах"""
+def create_vpn_client(tg_id: int, username: str = None, months: int = 1):
     base_name = f"{username}_{tg_id}" if username and username != "no_username" else str(tg_id)
-    expiry_date = datetime.datetime.now() + datetime.timedelta(days=XUI_EXPIRY_DAYS)
+    expiry_date = datetime.now() + timedelta(days=XUI_EXPIRY_DAYS * months)
     expiry_ms = int(expiry_date.timestamp() * 1000)
-
     sub_id = str(uuid.uuid4())
     success_count = 0
 
     for inbound_id in XUI_INBOUND_IDS:
         email = f"{base_name}@inbound{inbound_id}"
-
         client = {
             "id": str(uuid.uuid4()),
             "email": email,
@@ -86,12 +92,10 @@ def create_vpn_client(tg_id: int, username: str = None):
             "subId": sub_id,
             "flow": "xtls-rprx-vision"
         }
-
         payload = {
             "id": inbound_id,
             "settings": json.dumps({"clients": [client]})
         }
-
         try:
             r = requests.post(
                 f"{XUI_URL}/panel/api/inbounds/addClient",
@@ -114,7 +118,6 @@ def create_vpn_client(tg_id: int, username: str = None):
 
 # Продление клиента
 def renew_vpn_client(tg_id: int, username: str = None, months: int = 1):
-    """Продлевает подписку во всех inbound'ах"""
     try:
         with open("users.json", "r", encoding="utf-8") as f:
             users = json.load(f)
@@ -146,7 +149,7 @@ def renew_vpn_client(tg_id: int, username: str = None, months: int = 1):
 
             for client in clients:
                 if client.get("email") == search_email:
-                    now_ms = int(datetime.datetime.now().timestamp() * 1000)
+                    now_ms = int(datetime.now().timestamp() * 1000)
                     current_expiry = client.get("expiryTime", 0)
 
                     base_time = current_expiry if current_expiry > now_ms else now_ms
@@ -169,7 +172,7 @@ def renew_vpn_client(tg_id: int, username: str = None, months: int = 1):
 
                     if update.status_code == 200 and update.json().get("success"):
                         success_count += 1
-                        print(f"✅ Inbound {inbound_id} → продлено до {datetime.datetime.fromtimestamp(new_expiry/1000).date()}")
+                        print(f"✅ Inbound {inbound_id} → продлено до {datetime.fromtimestamp(new_expiry/1000).date()}")
                     break
 
         if new_expiry and success_count > 0:
@@ -365,7 +368,6 @@ def get_inbound_remarks():
 
 # Получение uid пользователя
 def get_or_create_uid(tg_id=None):
-    """Возвращает UID. Если tg_id=None — создаёт новый для бессрочного пользователя"""
     global uid_counter
     if tg_id is not None and tg_id in user_ids:
         return user_ids[tg_id]
@@ -378,7 +380,6 @@ def get_or_create_uid(tg_id=None):
     return uid
 
 def create_unlimited_by_email(email: str):
-    """Создаёт бессрочного клиента и сохраняет в users.json"""
     sub_id = str(uuid.uuid4())
     success_count = 0
     base_name = email.strip().lower()
@@ -425,7 +426,6 @@ def create_unlimited_by_email(email: str):
 
 # Сохранение пользователя через админку
 def save_user_for_unlimited(uid: int, email: str, sub_id: str):
-    """Сохраняет бессрочного пользователя в users.json"""
     if os.path.exists("users.json"):
         with open("users.json", "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -449,7 +449,6 @@ def save_user_for_unlimited(uid: int, email: str, sub_id: str):
 
 # Сохранение нового пользователя в файл
 def save_user(tg_id, uid, email=None, username=None, status="approved", expiry_time=None, sub_id=None):
-    """Сохраняет/обновляет пользователя"""
     if os.path.exists("users.json"):
         with open("users.json", "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -472,7 +471,7 @@ def save_user(tg_id, uid, email=None, username=None, status="approved", expiry_t
     else:
         # Новый пользователь
         if expiry_time is None:
-            expiry_time = int((datetime.datetime.now() + datetime.timedelta(days=XUI_EXPIRY_DAYS)).timestamp() * 1000)
+            expiry_time = int((datetime.now() + timedelta(days=XUI_EXPIRY_DAYS)).timestamp() * 1000)
 
         data[key] = {
             "uid": uid,
@@ -489,6 +488,37 @@ def save_user(tg_id, uid, email=None, username=None, status="approved", expiry_t
 
 
 # ====================== Работа с tg =======================
+
+# Первичный оффер
+def ask_vpn_offer(chat_id):
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(types.InlineKeyboardButton("💳 Оплатить 1 месяц", callback_data="pay:1"))
+    markup.add(types.InlineKeyboardButton("💳 Оплатить несколько месяцев", callback_data="pay:multi"))
+
+    bot.send_message(
+        chat_id,
+        "🔥 <b>Добро пожаловать в VidjetVPN</b> 🔥\n\n"
+        "🌍 <b>Доступные серверы:</b>\n"
+        "• 🇸🇪 Стокгольм ×2\n"
+        "• 🇫🇮 Хельсинки ×1\n"
+        "• 🇩🇪 Берлин ×1\n\n"
+        "🏴‍☠ Интернет в этих регионах свободный, без ограничений!\n\n"
+        "⚡ <b>Преимущества:</b>\n"
+        "• Без ограничений по трафику\n"
+        "• Высокая скорость соединения\n"
+        "• Стабильная работа\n"
+        "• 3 устройства на одной подписке\n"
+        "• Демократичная цена\n"
+        "• Прямая линия с поддержкой\n\n"
+        "📦 <b>После оплаты вы получите:</b>\n"
+        "• Конфиг для подключения\n"
+        "• Пошаговую инструкцию\n\n"
+        "💰 <b>Цена:</b>\n"
+        f"{PRICE_PER_MONTH}₽ / месяц и использование на 3 устройствах\n\n"
+        "❓ <b>Оформляем?</b>",
+        parse_mode="HTML",
+        reply_markup=markup
+    )
 
 # Генерация QR из ссылки
 def generate_qr_image(url: str):
@@ -511,17 +541,6 @@ def acquire_lock():
         print("Bot already running!")
         sys.exit(1)
     return lock_file
-
-# Получение суммы оплаты
-def get_amount(tg_id):
-    data = pending_requests.get(tg_id, {})
-    flow = data.get("flow")
-
-    if flow == "renew":
-        months = data.get("months", 1)
-        return PRICE_PER_MONTH * months
-
-    return PRICE_PER_MONTH
 
 # Контакт поддержки
 def support_contact():
@@ -563,7 +582,6 @@ def load_users():
 
 # Отправка видеоинструкции
 def send_instruction_video(chat_id):
-    """Отправляет видео-инструкцию из папки asset"""
     video_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'asset', 'instruction.mp4')
 
     if not os.path.exists(video_path):
@@ -616,7 +634,7 @@ def sub(tg_id, message):
 
             moscow_tz = ZoneInfo("Europe/Moscow")
 
-            expiry_date = datetime.datetime.fromtimestamp(
+            expiry_date = datetime.fromtimestamp(
                 expiry_ms / 1000, tz=moscow_tz
             ).strftime("%d.%m.%Y %H:%M")
 
@@ -643,47 +661,23 @@ def sub(tg_id, message):
 def process_months_input(message, tg_id):
     try:
         months = int(message.text.strip())
-        if months <= 0 or months > 12:
-            return bot.send_message(message.chat.id, "Введите корректное число месяцев (1–12)")
+        if months < 1 or months > 12:
+            msg = bot.send_message(tg_id, "❌ Введите число от 1 до 12")
+            bot.register_next_step_handler(msg, process_months_input, tg_id)
+            return
+        send_invoice(tg_id, months)
 
-        renewal_data[tg_id] = months
-        pending_requests[tg_id]["months"] = months
-
-        price = PRICE_PER_MONTH * months
-
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("💳 Перейти к оплате", callback_data=f"renew_pay:{tg_id}"))
-        markup.add(types.InlineKeyboardButton("❌ Отмена", callback_data=f"cancel:{tg_id}"))
-
-        bot.send_message(
-            message.chat.id,
-            f"💰 Итоговая сумма: {price}₽\n📅 Месяцев: {months}",
-            reply_markup=markup
+    except ValueError:
+        # Если ввели не число
+        msg = bot.send_message(
+            tg_id,
+            "❌ Пожалуйста, введите **число** (например: 3)",
+            parse_mode="HTML"
         )
+        bot.register_next_step_handler(msg, process_months_input, tg_id)
 
-    except:
-        bot.send_message(message.chat.id, "Введите число")
-
-# Функция запроса доступа у админа
-def send_admin_request_by_tg_id(tg_id, uid):
-    data = pending_requests.get(tg_id, {})
-    username = data.get("username") or "no_username"
-    user_link = get_user_link(tg_id, username)
-    flow = data.get("flow", "new")
-
-    markup = admin_keyboard(tg_id)
-    data = pending_requests.get(tg_id, {})
-    months = data.get("months", renewal_data.get(tg_id, 1))
-    price = PRICE_PER_MONTH * months
-    bot.send_message(
-        ADMIN_ID,
-        f"💰 Новая оплата\n\n"
-        f"Пользователь: {user_link}\n"
-        f"ID: {uid}\n"
-        f"Тип: {'Продление' if flow == 'renew' else 'Новая подписка'}\n"
-        f"Сумма: {price}₽ ({months} мес)",
-        reply_markup=markup,
-    )
+    except Exception as e:
+        bot.send_message(tg_id, "❌ Введите корректное число")
 
 # Проверка на админа
 def is_admin(user_id):
@@ -704,6 +698,23 @@ def process_delete_by_uid(message):
     else:
         bot.send_message(message.chat.id, f"❌ {msg}")
 
+# Отправляет уведомление админу об успешной оплате
+def admin_notify(tg_id: int, username: str, email: str, months: int, amount: int, payment_type: str):
+    try:
+        bot.send_message(
+            ADMIN_ID,
+            f"💰 <b>Новая оплата</b>\n\n"
+            f"Пользователь: @{username} ({tg_id})\n"
+            f"Email: <code>{email}</code>\n"
+            f"Тип: {payment_type}\n"
+            f"Месяцев: {months}\n"
+            f"Сумма: {amount // 100} ₽\n\n"
+            f"Время: {datetime.now(ZoneInfo('Europe/Moscow')).strftime('%d.%m.%Y %H:%M')}",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        print(f"Не удалось отправить уведомление админу: {e}")
+
 
 
 # ====================== Кнопки/меню =======================
@@ -715,15 +726,6 @@ def main_menu():
     markup.add("🔄 Продлить подписку")
     markup.add("📩 Поддержка")
     return markup
-
-# Функция выбора способа оплаты
-def show_payment_methods(tg_id):
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(types.InlineKeyboardButton("💳 Номер карты", callback_data=f"choose_method:card:{tg_id}"))
-    markup.add(types.InlineKeyboardButton("📱 СБП", callback_data=f"choose_method:sbp:{tg_id}"))
-    markup.add(types.InlineKeyboardButton("↩️ Назад", callback_data=f"choose_method:back:{tg_id}"))
-
-    bot.send_message(tg_id, "💰 Выберите способ оплаты:", reply_markup=markup)
 
 # Кнопки админа
 def admin_keyboard(tg_id):
@@ -749,70 +751,80 @@ def admin_panel():
 
 # ====================== Деньги =======================
 
-# Сохранение платежа для отчета
-def save_payment(tg_id: int, amount: int, months: int, payment_type: str, username: str = None, email: str = None):
+# Отправка платежа
+def send_invoice(tg_id: int, months: int = 1):
+    amount = PRICE_PER_MONTH * months * 100
+    payload = f"vpn_{tg_id}_{months}_{int(datetime.now().timestamp())}"
 
-    # Админа игнорим
-    if tg_id == ADMIN_ID:
-        return
+    current_flow = pending_requests.get(tg_id, {}).get("flow", "new")
 
-    # Сохраняет платеж в pay.json
-    if os.path.exists(PAYMENTS_FILE):
-        with open(PAYMENTS_FILE, "r", encoding="utf-8") as f:
-            payments = json.load(f)
-    else:
-        payments = []
-
-    now = datetime.datetime.now(ZoneInfo("Europe/Moscow"))
-
-    payment = {
-        "date": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "tg_id": tg_id,
-        "username": username or "unknown",
-        "email": email or "—",
-        "amount": amount,
+    pending_requests[tg_id] = {
+        "flow": current_flow,
         "months": months,
-        "type": payment_type,   # "new" или "renew"
-        "uid": get_or_create_uid(tg_id) if tg_id else None
+        "payload": payload
     }
 
-    payments.append(payment)
+    bot.send_invoice(
+        chat_id=tg_id,
+        title=f"VidjetVPN — {months} месяц(-ев)",
+        description=f"Подписка на VPN-серверы ({months} {'месяц' if months == 1 else 'месяцев'})",
+        invoice_payload=payload,
+        provider_token=PROVIDER_TOKEN,
+        currency="RUB",
+        prices=[types.LabeledPrice(f"Подписка на {months} мес.", amount)],
+        need_email=False,
+        start_parameter=f"pay_{months}"
+    )
 
-    with open(PAYMENTS_FILE, "w", encoding="utf-8") as f:
-        json.dump(payments, f, ensure_ascii=False, indent=4)
+# Проверка активной подписки у пользователя
+def get_user_status(tg_id):
+    if not os.path.exists("users.json"):
+        return None
+    with open("users.json", "r", encoding="utf-8") as f:
+        users = json.load(f)
+    return users.get(str(tg_id), None)
 
 # Отчет по платежам
-def get_monthly_report():
-    if not os.path.exists(PAYMENTS_FILE):
-        return "Нет платежей за этот месяц."
+def get_payments_report(days: int = 30):
+    if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
+        return "❌ ЮKassa не настроена (отсутствуют Shop ID / Secret Key)"
 
-    with open(PAYMENTS_FILE, "r", encoding="utf-8") as f:
-        payments = json.load(f)
+    try:
+        date_from = (datetime.now() - timedelta(days=days)).isoformat() + "Z"
 
-    now = datetime.datetime.now(ZoneInfo("Europe/Moscow"))
-    current_month = now.strftime("%Y-%m")
+        response = Payment.list({
+            "created_at.gte": date_from,
+            "status": "succeeded",
+            "limit": 100
+        })
 
-    month_payments = [p for p in payments if p["date"].startswith(current_month)]
+        payments = response.items if hasattr(response, 'items') else []
 
-    total_income = sum(p["amount"] for p in month_payments)
-    count = len(month_payments)
+        if not payments:
+            return f"📊 За последние {days} дней платежей не найдено."
 
-    text = f"📊 Отчёт за {now.strftime('%B %Y')}\n\n"
-    text += f"💰 Всего платежей: {count}\n"
-    text += f"💵 Доход за месяц: {total_income} ₽\n\n"
-    text += "Последние платежи:\n\n"
+        total_amount = 0
+        text = f"📊 <b>Отчёт по платежам ЮKassa</b>\n"
+        text += f"Период: последние {days} дней\n"
+        text += f"Всего успешных платежей: <b>{len(payments)}</b>\n\n"
 
-    for p in sorted(month_payments, key=lambda x: x["date"], reverse=True)[:15]:
-        text += (
-            f"{'─' * 18}\n"
-            f"• {p.get('email', '—')}\n"
-            f"  {p['date'][:16]} | "
-            f"{p['amount']}₽ | "
-            f"({p['type']})\n"
-        )
+        for p in payments:
+            amount = float(p.amount.value)
+            total_amount += amount
+            date = datetime.fromisoformat(p.created_at.replace("Z", "+00:00")).strftime("%d.%m %H:%M")
 
-    return text
+            payment_type = "💳 Карта"
+            if p.payment_method and p.payment_method.type == "sbp":
+                payment_type = "📱 СБП"
 
+            text += f"• {date} | {amount} ₽ | {payment_type}\n"
+
+        text += f"\n💰 <b>Итого за период: {round(total_amount, 2)} ₽</b>"
+
+        return text
+
+    except Exception as e:
+        return f"❌ Ошибка получения отчёта из ЮKassa:\n{str(e)}"
 
 
 
@@ -820,7 +832,117 @@ def get_monthly_report():
 # ====================== ХЭНДЛЕРЫ ======================
 # =======================================================
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith("pay:"))
+def handle_pay_choice(call):
+    tg_id = call.from_user.id
+    action = call.data.split(":")[1]
 
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+    if action == "1":
+        send_invoice(tg_id, months=1)
+    elif action == "multi":
+        msg = bot.send_message(tg_id, "📅 Введите количество месяцев (1–12):")
+        bot.register_next_step_handler(msg, process_months_input, tg_id)
+
+    bot.answer_callback_query(call.id)
+
+@bot.pre_checkout_query_handler(lambda query: True)
+def pre_checkout_query(pre_checkout_q):
+    bot.answer_pre_checkout_query(pre_checkout_q.id, ok=True)
+
+
+@bot.message_handler(content_types=['successful_payment'])
+def successful_payment(message):
+    tg_id = message.chat.id
+    payment = message.successful_payment
+    data = pending_requests.get(tg_id, {})
+
+    months = data.get("months", 1)
+    flow = data.get("flow", "new")   # "new" или "renew"
+    username = message.from_user.username or "no_username"
+
+    bot.send_message(tg_id, "✅ Оплата прошла успешно! Активируем подписку...")
+
+    if flow == "new":
+        # === НОВАЯ ПОДПИСКА ===
+        success, error_msg, base_name, expiry_ms, sub_id = create_vpn_client(tg_id, username, months)
+
+        if success:
+            uid = get_or_create_uid(tg_id)
+            save_user(tg_id, uid, base_name, username, "approved", expiry_ms, sub_id)
+
+            sub_link = f"{XUI_SUB_LINK}/{sub_id}"
+
+            # Уведомление админу
+            admin_notify(tg_id, username, base_name, months, payment.total_amount, "Новая подписка")
+
+            # Сообщения пользователю
+            bot.send_message(
+                tg_id,
+                "📋 <b>Инструкция по подключению:</b>\n\n"
+                "1. Скачайте приложение v2raytun\n"
+                "Android: https://play.google.com/store/apps/details?id=com.v2raytun.android\n"
+                "IOS: https://apps.apple.com/kz/app/v2raytun/id6476628951\n"
+                "Windows, MAC, Linux: https://v2raytun.com/\n"
+                "А так же другие клиенты и инструкции к ним можно посмотреть по этой ссылке:\n https://gist.github.com/kksudo/9e2072b3c60a72040f4e9d6fb9da7e9c\n\n"
+                "2. Для Android и IOS следуйте видеоинструкции ниже. На IOS пропускаем часть с маршрутизацией приложений.\n\n"
+                "3. Пользуемся подключениями:\n 🏴‍☠Устройство-1,2,3\nВнешние сервера:\n🇫🇮HELSINKI, 🇸🇪STOKGOLM и тд\nиспользуем только если основное подключение отвалилось!\n\n"
+                "4. Одно устройство - 1 подключение. Что это значит? Например хотим сидеть с ноутбука и с телефона. На ноутбуке выбираем 🏴‍☠Устройство-1, на телефоне 🏴‍☠Устройство-2. СИДЕТЬ С ДВУХ УСТРОЙСТВ НА ОДНОМ ПОДКЛЮЧЕНИИ НЕЛЬЗЯ!\n\n"
+                f"Если будут вопросы — 👤 Напишите сюда: {SUPPORT}\n⏱ Мы ответим вам как можно скорее.",
+                parse_mode="HTML"
+            )
+
+            send_instruction_video(tg_id)
+
+            bot.send_message(tg_id,
+                "🎉 <b>Подписка успешно активирована!</b>\n\n"
+                f"🔗 <b>Ваша ссылка на подписку:</b>\n"
+                f"<code>{sub_link}</code>\n"
+                "Переходить по ссылке не нужно, ее необходимо скопировать и вставить в приложение.\n\n"
+                "🎉 Добро пожаловать в VidjetVPN!\n\n"
+                "👇 Подписывайтесь на группу, чтобы быть в курсе новостей:\n"
+                f"🏴‍☠{GRUPP}",
+                parse_mode="HTML",
+                reply_markup=main_menu()
+            )
+
+        else:
+            # Ошибка создания клиента
+            bot.send_message(tg_id, f"❌ Ошибка активации подписки. Если вы уверены, что это ошибка,\n 👤 Напишите сюда: {SUPPORT}\n⏱ Мы ответим вам как можно скорее.")
+            bot.send_message(
+                ADMIN_ID,
+                f"⚠️ Ошибка создания пользователя!\n"
+                f"TG: @{username} ({tg_id})\n"
+                f"Ошибка: {error_msg}"
+            )
+
+    else:
+        # === ПРОДЛЕНИЕ ===
+        success, error_msg, email, expiry_ms = renew_vpn_client(tg_id, username, months)
+
+        if success:
+            save_user(tg_id, get_or_create_uid(tg_id), email, username, "approved", expiry_ms)
+
+            # Уведомление админу
+            admin_notify(tg_id, username, email, months, payment.total_amount, "Продление")
+
+            bot.send_message(
+                tg_id,
+                f"🔄 <b>Подписка успешно продлена на {months} месяцев!</b>",
+                parse_mode="HTML",
+                reply_markup=main_menu()
+            )
+            sub(tg_id, message)   # отправляем актуальную информацию о подписке
+
+        else:
+            bot.send_message(tg_id, "❌ Ошибка продления подписки. 👤 Если вы уверены, что это ошибка, напишите сюда: {SUPPORT}\n⏱ Мы ответим вам как можно скорее.")
+            bot.send_message(ADMIN_ID, f"⚠️ Ошибка продления!\nTG: @{username} ({tg_id})\n{error_msg}")
+
+    pending_requests.pop(tg_id, None)
 
 @bot.message_handler(commands=['start'])
 def start_handler(message):
@@ -863,56 +985,7 @@ def start_handler(message):
         bot.send_message(message.chat.id, "🕚 Жду подтверждения")
         return
 
-    ask_vpn_offer(message.chat.id, loading_msg.message_id)
-
-
-def ask_vpn_offer(chat_id, loading_message_id=None):
-    if loading_message_id:
-        try:
-            bot.delete_message(chat_id, loading_message_id)
-        except:
-            pass
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("✅ Да, оформляем", callback_data=f"offer:yes:{chat_id}"),
-        types.InlineKeyboardButton("❌ Нет", callback_data=f"offer:no:{chat_id}")
-    )
-
-    # Получаем сервера
-    remarks = get_inbound_remarks()
-
-    servers_text = ""
-    for remark in remarks:
-        servers_text += f"• {remark}\n"
-
-    if not servers_text:
-        servers_text = "• 🇸🇪 Стокгольм ×2\n• 🇫🇮 Хельсинки ×1\n• 🇫🇷 Париж ×1\n"
-
-    bot.send_message(
-        chat_id,
-        "🔥 <b>Добро пожаловать в VidjetVPN</b> 🔥\n\n"
-        "🌍 <b>Доступные серверы:</b>\n"
-#        f"{servers_text}\n"
-        "• 🇸🇪 Стокгольм ×2\n"
-        "• 🇫🇮 Хельсинки ×1\n"
-        "• 🇩🇪 Берлин ×1\n\n"
-        "🏴‍☠ Интернет в этих регионах свободный, без ограничений!\n\n"
-        "⚡ <b>Преимущества:</b>\n"
-        "• Без ограничений по трафику\n"
-        "• Высокая скорость соединения\n"
-        "• Стабильная работа\n"
-        "• 3 устройства на одной подписке\n"
-        "• Демократичная цена\n"
-        "• Прямая линия с поддержкой\n\n"
-        "📦 <b>После оплаты вы получите:</b>\n"
-        "• Конфиг для подключения\n"
-        "• Пошаговую инструкцию\n\n"
-        "💰 <b>Цена:</b>\n"
-        f"{PRICE_PER_MONTH}₽ / месяц и использование на 3 устройствах\n\n"
-        "❓ <b>Оформляем?</b>",
-        parse_mode="HTML",
-        reply_markup=markup
-    )
+    ask_vpn_offer(message.chat.id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("offer:"))
 def handle_offer_response(call):
@@ -937,7 +1010,6 @@ def handle_offer_response(call):
     }
 
     bot.answer_callback_query(call.id)
-    show_payment_methods(tg_id)
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip() in [
     "📦 Моя подписка", "🔄 Продлить подписку", "📩 Поддержка", "↩️ Назад"
@@ -966,19 +1038,12 @@ def menu_handler(message):
     if text == "📦 Моя подписка":
         sub(tg_id, message)
     elif text == "🔄 Продлить подписку":
-        uid = get_or_create_uid(tg_id)
-        pending_requests[tg_id] = {
-            "id": uid,
-            "username": message.from_user.username,
-            "flow": "renew"
-        }
-
+        pending_requests[tg_id] = {"flow": "renew"}
         markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(
-            types.InlineKeyboardButton(f"📅 На 1 месяц — {PRICE_PER_MONTH}₽", callback_data=f"renew:1:{tg_id}"),
-            types.InlineKeyboardButton("📅 На несколько месяцев", callback_data=f"renew:multi:{tg_id}")
+            types.InlineKeyboardButton(f"📅 На 1 месяц — {PRICE_PER_MONTH}₽", callback_data="renew:1"),
+            types.InlineKeyboardButton("📅 На несколько месяцев", callback_data="renew:multi")
         )
-
         bot.send_message(
             message.chat.id,
             "🔄 Выберите срок продления:",
@@ -987,151 +1052,22 @@ def menu_handler(message):
     elif text == "📩 Поддержка":
         bot.send_message(message.chat.id, support_contact())
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("paid:"))
-def handle_paid(call):
-    tg_id = int(call.data.split(":")[1])
-
-    # Берём данные из основного хранилища
-    data = pending_requests.get(tg_id)
-    if not data:
-        return bot.answer_callback_query(call.id, "Нет активной заявки")
-
-    try:
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-    except:
-        pass
-
-    flow = data.get("flow", "new")
-
-    uid = get_or_create_uid(tg_id)
-
-    # Обновляем/дополняем данные перед отправкой админу
-    pending_requests[tg_id]["id"] = uid
-    pending_requests[tg_id]["username"] = data.get("username")
-    pending_requests[tg_id]["flow"] = flow
-
-    send_admin_request_by_tg_id(tg_id, uid)
-
-    bot.send_message(
-        tg_id,
-        f"⏳ Заявка отправлена на проверку оплаты.\n\n"
-        "Обычно проверка занимает от 1 до 15 минут."
-    )
-    bot.answer_callback_query(call.id)
-
 @bot.callback_query_handler(func=lambda call: call.data.startswith("renew:"))
 def handle_renew_choice(call):
-    _, mode, tg_id_str = call.data.split(":")
-    tg_id = int(tg_id_str)
+    action = call.data.split(":")[1]
+    tg_id = call.from_user.id
 
     try:
         bot.delete_message(call.message.chat.id, call.message.message_id)
     except:
         pass
 
-    if mode == "1":
-        months = 1
-        renewal_data[tg_id] = months
-
-        pending_requests[tg_id]["months"] = months
-
-        show_payment_methods(tg_id)
-        bot.answer_callback_query(call.id)
-        return
-
-    if mode == "multi":
-        msg = bot.send_message(call.message.chat.id, "📅 Введите количество месяцев (число):")
-
+    if action == "1":
+        send_invoice(tg_id, months=1)
+    elif action == "multi":
+        msg = bot.send_message(tg_id, "📅 Введите количество месяцев (1–12):")
         bot.register_next_step_handler(msg, process_months_input, tg_id)
-        bot.answer_callback_query(call.id)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("choose_method:"))
-def handle_choose_method(call):
-    parts = call.data.split(":")
-    action = parts[1]
-    tg_id = int(parts[2])
-
-    # Получаем данные из единого хранилища
-    data = pending_requests.get(tg_id, {})
-
-    try:
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-    except:
-        pass
-
-    if action in ["back", "back_to_methods"]:
-        if action == "back":
-            pending_requests.pop(tg_id, None)
-            ask_vpn_offer(tg_id)
-        else:
-            show_payment_methods(tg_id)
-        bot.answer_callback_query(call.id, "Возвращаемся")
-        return
-
-    # Сохраняем выбранный метод
-    if tg_id in pending_requests:
-        pending_requests[tg_id]["method"] = action
-
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(types.InlineKeyboardButton("✅ Я оплатил", callback_data=f"paid:{tg_id}"))
-    markup.add(types.InlineKeyboardButton("↩️ Назад", callback_data=f"choose_method:back_to_methods:{tg_id}"))
-    amount = get_amount(tg_id)
-    if action == "card":
-        tcard = config.get("DEFAULT", "TCARD_NUMBER").strip('"')
-        scard = config.get("DEFAULT", "SCARD_NUMBER").strip('"')
-        acard = config.get("DEFAULT", "ACARD_NUMBER").strip('"')
-        bot.send_message(
-            tg_id,
-            f"💳 Перевод на карту\n"
-            f"💰 К оплате: <b>{amount}₽</b>\n\n"
-            f"Т-Банк <code>{tcard}</code>\n\n"
-            f"Сбер <code>{scard}</code>\n\n"
-            f"Альфа <code>{acard}</code>\n\n"
-            "После оплаты нажмите кнопку ниже.",
-            parse_mode="HTML",
-            reply_markup=markup
-        )
-    else:
-        sbp_url = config.get("DEFAULT", "SBP_URL").strip('"')
-        qr_img = generate_qr_image(sbp_url)
-        bot.send_photo(
-            tg_id,
-            qr_img,
-            caption=f"📱 СБП\n💰 К оплате: <b>{amount}₽</b>\n\n{sbp_url}\n\nПосле оплаты нажмите кнопку ниже.", parse_mode="HTML",
-            reply_markup=markup
-        )
-
-    bot.answer_callback_query(call.id)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("renew_pay:"))
-def handle_renew_pay(call):
-    tg_id = int(call.data.split(":")[1])
-
-    months = renewal_data.get(tg_id, 1)
-    price = PRICE_PER_MONTH * months
-
-    pending_requests[tg_id]["months"] = months
-    pending_requests[tg_id]["amount"] = price
-
-    try:
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-    except:
-        pass
-
-    show_payment_methods(call.message.chat.id)
-
-    bot.answer_callback_query(call.id)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("back_to_methods:"))
-def back_to_payment_methods(call):
-    tg_id = int(call.data.split(":")[1])
-
-    try:
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-    except:
-        pass
-
-    show_payment_methods(call.message.chat.id, remove_previous=True)
     bot.answer_callback_query(call.id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("cancel:"))
@@ -1151,156 +1087,6 @@ def handle_cancel(call):
         "❌ Оплата отменена",
         reply_markup=main_menu()
     )
-
-    bot.answer_callback_query(call.id)
-
-# Блокировка текстового спама "Я оплатил"
-@bot.message_handler(func=lambda m: m.text and any(phrase in m.text.lower() for phrase in
-    ["я оплатил", "я оплатилa", "оплатил", "оплатила", "перевёл", "перевела"]))
-def handle_text_paid(message):
-    tg_id = message.from_user.id
-
-    if tg_id in pending_requests:
-        bot.send_message(
-            tg_id,
-            "✅ Используйте кнопку «Я оплатил», а не пишите текстом.\n"
-            f"Если кнопка исчезла — ожидайте подтверждения оплаты. В среднем она занимает до 15 минут. Если подтверждение не приходит дольше, 👤 Напишите сюда: {SUPPORT}"
-        )
-    else:
-        bot.send_message(tg_id, "Если вы хотите оплатить — нажмите «🔄 Продлить подписку».")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith(("approve:", "reject:", "block:")))
-def admin_actions(call):
-    action, tg_id_str = call.data.split(":")
-    tg_id = int(tg_id_str)
-
-    if not is_admin(call.from_user.id):
-        return
-    try:
-        bot.delete_message(call.message.chat_id, call.message.message_id)
-    except:
-        pass
-    # Если заявки уже нет
-    if tg_id not in pending_requests:
-        if action == "approve":
-            bot.answer_callback_query(call.id, "Попробуйте нажать кнопку ещё раз")
-        else:
-            bot.answer_callback_query(call.id, "✅ Уже обработано")
-        return
-
-    data = pending_requests.get(tg_id, {})
-    flow = data.get("flow", "new")
-    username = data.get("username") or "no_username"
-    uid = get_or_create_uid(tg_id)
-
-    if action == "approve":
-        if flow == "new":
-            # === НОВАЯ ПОДПИСКА ===
-            success, error_msg, base_name, expiry_ms, sub_id = create_vpn_client(tg_id, username)
-
-            if success:
-                approved_users.add(tg_id)
-                save_user(tg_id, uid, base_name, username, "approved", expiry_ms, sub_id)
-                # === ЗАПИСЬ ПЛАТЕЖА ===
-                months = data.get("months", 1)
-                amount = PRICE_PER_MONTH * months
-                save_payment(tg_id, amount, months, "new", username, base_name)
-                sub_link = f"{XUI_SUB_LINK}/{sub_id}"
-
-                bot.send_message(call.message.chat.id, f"✅ Пользователь {tg_id} успешно создан в 3x-ui")
-
-                bot.send_message(
-                    tg_id,
-                    "📋 <b>Инструкция по подключению:</b>\n\n"
-                    "1. Скачайте приложение v2raytun\n"
-                    "Android: https://play.google.com/store/apps/details?id=com.v2raytun.android\n"
-                    "IOS: https://apps.apple.com/kz/app/v2raytun/id6476628951\n"
-                    "Windows, MAC, Linux: https://v2raytun.com/\n"
-                    "А так же другие клиенты и инструкции к ним можно посмотреть по этой ссылке:\n https://gist.github.com/kksudo/9e2072b3c60a72040f4e9d6fb9da7e9c\n\n"
-                    "2. Для Android и IOS следуйте видеоинструкции ниже. На IOS пропускаем часть с маршрутизацией приложений.\n\n"
-                    "3. Пользуемся подключениями:\n 🏴‍☠Устройство-1,2,3\nВнешние сервера:\n🇫🇮HELSINKI, 🇸🇪STOKGOLM и тд\nиспользуем только если основное подключение отвалилось!\n\n"
-                    "4. Одно устройство - 1 подключение. Что это значит? Например хотим сидеть с ноутбука и с телефона. На ноутбуке выбираем 🏴‍☠Устройство-1, на телефоне 🏴‍☠Устройство-2. СИДЕТЬ С ДВУХ УСТРОЙСТВ НА ОДНОМ ПОДКЛЮЧЕНИИ НЕЛЬЗЯ!\n\n"
-                    f"Если будут вопросы — 👤 Напишите сюда: {SUPPORT}\n⏱ Мы ответим вам как можно скорее.",
-                    parse_mode="HTML"
-                )
-
-                send_instruction_video(tg_id)
-
-                bot.send_message(tg_id,
-                    "🎉 <b>Подписка успешно активирована!</b>\n\n"
-                    f"🔗 <b>Ваша ссылка на подписку:</b>\n"
-                    f"<code>{sub_link}</code>\n"
-                    "Переходить по ссылке не нужно, ее необходимо скопировать и вставить в приложение.\n\n"
-                    "🎉 Добро пожаловать в VidjetVPN!\n\n"
-                    "👇 Подписывайтесь на группу, чтобы быть в курсе новостей:\n"
-                    f"🏴‍☠{GRUPP}",
-                    parse_mode="HTML",
-                    reply_markup=main_menu()
-                )
-
-                pending_requests.pop(tg_id, None)
-
-            else:
-                # Ошибка создания
-                bot.send_message(
-                    call.message.chat.id,
-                    f"❌ Ошибка создания пользователя {tg_id} в 3x-ui\n\n"
-                    f"Ошибка: {error_msg}\n\n"
-                    f"Попробуйте одобрить ещё раз.",
-                    reply_markup=admin_keyboard(tg_id)
-                )
-                bot.send_message(
-                    tg_id,
-                    f"⏳ Ваша заявка обрабатывается.\n\n"
-                    f"👤 При возникновении вопросов — Напишите сюда: {SUPPORT}"
-                )
-
-        else:
-            # === ПРОДЛЕНИЕ ===
-            months = pending_requests.get(tg_id, {}).get("months", 1)
-            success, error_msg, email, expiry_ms = renew_vpn_client(tg_id, username, months)
-            if success:
-                approved_users.add(tg_id)
-                save_user(tg_id, uid, email, username, "approved", expiry_ms)
-
-                # === ЗАПИСЬ ПЛАТЕЖА ===
-                amount = PRICE_PER_MONTH * months
-                save_payment(tg_id, amount, months, "renew", username, email)
-
-                bot.send_message(call.message.chat.id, f"✅ Продление для {tg_id} успешно")
-                sub(tg_id, call.message)
-                bot.send_message(tg_id, "🔄 Подписка продлена, с возвращением!", reply_markup=main_menu())
-
-                pending_requests.pop(tg_id, None)
-            else:
-                bot.send_message(call.message.chat.id, f"❌ Ошибка продления {tg_id}\n{error_msg}")
-
-    elif action == "reject":
-        current_data = pending_requests.get(tg_id, {})
-        flow = current_data.get("flow", "new")
-
-        bot.send_message(
-            tg_id,
-            f"❌ Оплата отклонена.\n\n"
-            f"Вы можете попробовать оплатить ещё раз."
-        )
-
-        pending_requests[tg_id] = {
-            "id": get_or_create_uid(tg_id),
-            "username": current_data.get("username"),
-            "flow": flow,
-            "amount": PRICE_PER_MONTH
-        }
-
-        show_payment_methods(tg_id)
-        bot.send_message(call.message.chat.id, "❌ Оплата отклонена")
-
-    elif action == "block":
-        blocked_users.add(tg_id)
-        save_user(tg_id, uid, "", username, "block")
-        bot.send_message(tg_id, f"🚫 Вы заблокированы за спам.\nДля разблокировки: {SUPPORT}")
-        bot.send_message(call.message.chat.id, "🚫 Пользователь заблокирован")
-        pending_requests.pop(tg_id, None)
 
     bot.answer_callback_query(call.id)
 
@@ -1342,7 +1128,7 @@ def show_users(message):
         tg_id = key if not key.startswith("uid_") else "— (бессрочно)"
 
         moscow_tz = ZoneInfo("Europe/Moscow")
-        expiry_date = "БЕССРОЧНО" if expiry == 0 else datetime.datetime.fromtimestamp(expiry / 1000, tz=moscow_tz).strftime("%d.%m.%Y %H:%M")
+        expiry_date = "БЕССРОЧНО" if expiry == 0 else datetime.fromtimestamp(expiry / 1000, tz=moscow_tz).strftime("%d.%m.%Y %H:%M")
 
         online = False
         if email:
@@ -1430,8 +1216,8 @@ def servers_status(message):
 def show_payments_report(message):
     if not is_admin(message.from_user.id):
         return
-    report = get_monthly_report()
-    bot.send_message(message.chat.id, report)
+    report = get_payments_report()
+    bot.send_message(message.chat.id, report, parse_mode="HTML")
 
 # ====================== ЗАПУСК ======================
 if __name__ == '__main__':
