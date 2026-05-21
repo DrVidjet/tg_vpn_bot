@@ -1092,7 +1092,6 @@ def handle_cancel(call):
 
 @bot.message_handler(commands=['admin'])
 def admin_handler(message):
-
     if not is_admin(message.from_user.id):
         return
 
