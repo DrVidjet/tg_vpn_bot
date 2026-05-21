@@ -13,8 +13,6 @@ import uuid
 from zoneinfo import ZoneInfo
 from yookassa import Configuration, Payment
 from datetime import datetime, timedelta
-import time
-import threading
 
 # ====================== КОНФИГУРАЦИЯ ======================
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'API.conf')
@@ -119,12 +117,12 @@ def create_vpn_client(tg_id: int, username: str = None, months: int = 1):
         return False, f"Успешно {success_count}/{len(XUI_INBOUND_IDS)} inbound'ов", base_name, expiry_ms, sub_id
 
 # Продление клиента
-def renew_vpn_client(tg_id: int, username: str = None, months: int = 1):
+def renew_vpn_client(uid:int, tg_id: int, username: str = None, months: int = 1):
     try:
         with open("users.json", "r", encoding="utf-8") as f:
             users = json.load(f)
         extra_days = XUI_EXPIRY_DAYS * months
-        user_data = users.get(str(tg_id))
+        user_data = users.get(str(uid))
         if not user_data or not user_data.get("email"):
             return False, "Email пользователя не найден в users.json", None, None
 
@@ -457,7 +455,7 @@ def save_user(tg_id, uid, email=None, username=None, status="approved", expiry_t
     else:
         data = {}
 
-    key = str(tg_id)
+    key = str(uid)
 
     if key in data:
         current = data[key]
@@ -490,6 +488,37 @@ def save_user(tg_id, uid, email=None, username=None, status="approved", expiry_t
 
 
 # ====================== Работа с tg =======================
+
+# Первичный оффер
+def ask_vpn_offer(chat_id):
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(types.InlineKeyboardButton("💳 Оплатить 1 месяц", callback_data="pay:1"))
+    markup.add(types.InlineKeyboardButton("💳 Оплатить несколько месяцев", callback_data="pay:multi"))
+
+    bot.send_message(
+        chat_id,
+        "🔥 <b>Добро пожаловать в VidjetVPN</b> 🔥\n\n"
+        "🌍 <b>Доступные серверы:</b>\n"
+        "• 🇸🇪 Стокгольм ×2\n"
+        "• 🇫🇮 Хельсинки ×1\n"
+        "• 🇩🇪 Берлин ×1\n\n"
+        "🏴‍☠ Интернет в этих регионах свободный, без ограничений!\n\n"
+        "⚡ <b>Преимущества:</b>\n"
+        "• Без ограничений по трафику\n"
+        "• Высокая скорость соединения\n"
+        "• Стабильная работа\n"
+        "• 3 устройства на одной подписке\n"
+        "• Демократичная цена\n"
+        "• Прямая линия с поддержкой\n\n"
+        "📦 <b>После оплаты вы получите:</b>\n"
+        "• Конфиг для подключения\n"
+        "• Пошаговую инструкцию\n\n"
+        "💰 <b>Цена:</b>\n"
+        f"{PRICE_PER_MONTH}₽ / месяц и использование на 3 устройствах\n\n"
+        "❓ <b>Оформляем?</b>",
+        parse_mode="HTML",
+        reply_markup=markup
+    )
 
 # Генерация QR из ссылки
 def generate_qr_image(url: str):
@@ -532,9 +561,9 @@ def load_users():
         uid = info.get("uid")
         status = info.get("status")
 
-        # Обычный пользователь (ключ = TG_ID)
+        # Обычный пользователь (ключ = uid)
         if key.isdigit():
-            tg_id = int(key)
+            uid = int(key)
             if uid is not None:
                 user_ids[tg_id] = uid
                 if uid > max_uid:
@@ -581,7 +610,7 @@ def get_user_link(tg_id, username):
         return f"tg://user?id={tg_id}"
 
 # Информация о подписке
-def sub(tg_id, message):
+def sub(uid, message):
     try:
             if not os.path.exists("users.json"):
                 bot.send_message(message.chat.id, "❌ Данные подписки не найдены.")
@@ -590,7 +619,7 @@ def sub(tg_id, message):
             with open("users.json", "r", encoding="utf-8") as f:
                 users = json.load(f)
 
-            user_data = users.get(str(tg_id))
+            user_data = users.get(str(uid))
 
             if not user_data:
                 bot.send_message(message.chat.id, "❌ Подписка не найдена.")
@@ -686,63 +715,6 @@ def admin_notify(tg_id: int, username: str, email: str, months: int, amount: int
     except Exception as e:
         print(f"Не удалось отправить уведомление админу: {e}")
 
-# Проверяет подписки каждый день в 12 по мск и отправляет уведомления пользователям за 3 дня и в день истечения подписки
-def check_expiring_subscriptions():
-    while True:
-        try:
-            now = datetime.now(ZoneInfo("Europe/Moscow"))
-
-            # Запускаем проверку только в 12:00 ± 1 минута
-            if now.hour == 12 and now.minute < 2:
-                if os.path.exists("users.json"):
-                    with open("users.json", "r", encoding="utf-8") as f:
-                        users = json.load(f)
-
-                    current_time = now.timestamp() * 1000
-
-                    for tg_id_str, data in users.items():
-                        if not tg_id_str.isdigit():
-                            continue
-                        tg_id = int(tg_id_str)
-                        expiry = data.get("expiry_time")
-                        if not expiry or expiry == 0:  # бессрочные
-                            continue
-
-                        days_left = (expiry - current_time) / (86400 * 1000)
-
-                        if 2.8 < days_left < 3.2:   # ~за 3 дня
-                            try:
-                                bot.send_message(
-                                    tg_id,
-                                    "⚠️ <b>Ваша подписка заканчивается через 3 дня!</b>\n\n"
-                                    "Не забудьте продлить, чтобы не потерять доступ.",
-                                    parse_mode="HTML"
-                                )
-                            except:
-                                pass
-
-                        elif -0.2 < days_left < 0.8:   # в день окончания
-                            try:
-                                bot.send_message(
-                                    tg_id,
-                                    "❗️ <b>Ваша подписка сегодня заканчивается!</b>\n\n"
-                                    "Продлите подписку, чтобы продолжить пользоваться VPN.",
-                                    parse_mode="HTML"
-                                )
-                            except:
-                                pass
-
-            time.sleep(60)  # проверяем каждую минуту
-
-        except Exception as e:
-            print(f"Ошибка проверки истекающих подписок: {e}")
-            time.sleep(300)
-
-# Запуск проверки подписок в фоне
-def start_expiry_checker():
-    thread = threading.Thread(target=check_expiring_subscriptions, daemon=True)
-    thread.start()
-
 
 
 # ====================== Кнопки/меню =======================
@@ -769,7 +741,6 @@ def admin_panel():
 
     markup.add("👥 Пользователи")
     markup.add("➕ Добавить пользователя")
-    markup.add("🔄 Продлить пользователя")
     markup.add("🗑 Удалить пользователя")
     markup.add("📊 Отчет по оплатам")
     markup.add("🖥 Статус серверов")
@@ -889,7 +860,7 @@ def successful_payment(message):
     tg_id = message.chat.id
     payment = message.successful_payment
     data = pending_requests.get(tg_id, {})
-
+    uid = get_or_create_uid(tg_id)
     months = data.get("months", 1)
     flow = data.get("flow", "new")   # "new" или "renew"
     username = message.from_user.username or "no_username"
@@ -901,7 +872,6 @@ def successful_payment(message):
         success, error_msg, base_name, expiry_ms, sub_id = create_vpn_client(tg_id, username, months)
 
         if success:
-            uid = get_or_create_uid(tg_id)
             save_user(tg_id, uid, base_name, username, "approved", expiry_ms, sub_id)
 
             sub_link = f"{XUI_SUB_LINK}/{sub_id}"
@@ -951,7 +921,7 @@ def successful_payment(message):
 
     else:
         # === ПРОДЛЕНИЕ ===
-        success, error_msg, email, expiry_ms = renew_vpn_client(tg_id, username, months)
+        success, error_msg, email, expiry_ms = renew_vpn_client(uid, tg_id, username, months)
 
         if success:
             save_user(tg_id, get_or_create_uid(tg_id), email, username, "approved", expiry_ms)
@@ -965,7 +935,7 @@ def successful_payment(message):
                 parse_mode="HTML",
                 reply_markup=main_menu()
             )
-            sub(tg_id, message)   # отправляем актуальную информацию о подписке
+            sub(uid, message)   # отправляем актуальную информацию о подписке
 
         else:
             bot.send_message(tg_id, "❌ Ошибка продления подписки. 👤 Если вы уверены, что это ошибка, напишите сюда: {SUPPORT}\n⏱ Мы ответим вам как можно скорее.")
@@ -976,6 +946,7 @@ def successful_payment(message):
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     tg_id = message.from_user.id
+    uid = get_or_create_uid(tg_id)
     loading_msg = bot.send_message(message.chat.id, "⌛", reply_markup=types.ReplyKeyboardRemove())
 
     if tg_id in blocked_users:
@@ -988,7 +959,7 @@ def start_handler(message):
             with open("users.json", "r", encoding="utf-8") as f:
                 users = json.load(f)
 
-            user_data = users.get(str(tg_id))
+            user_data = users.get(str(uid))
         except:
             user_data = None
 
@@ -1015,37 +986,6 @@ def start_handler(message):
         return
 
     ask_vpn_offer(message.chat.id)
-
-# Первичный оффер
-def ask_vpn_offer(chat_id):
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(types.InlineKeyboardButton("💳 Оплатить 1 месяц", callback_data="pay:1"))
-    markup.add(types.InlineKeyboardButton("💳 Оплатить несколько месяцев", callback_data="pay:multi"))
-
-    bot.send_message(
-        chat_id,
-        "🔥 <b>Добро пожаловать в VidjetVPN</b> 🔥\n\n"
-        "🌍 <b>Доступные серверы:</b>\n"
-        "• 🇸🇪 Стокгольм ×2\n"
-        "• 🇫🇮 Хельсинки ×1\n"
-        "• 🇩🇪 Берлин ×1\n\n"
-        "🏴‍☠ Интернет в этих регионах свободный, без ограничений!\n\n"
-        "⚡ <b>Преимущества:</b>\n"
-        "• Без ограничений по трафику\n"
-        "• Высокая скорость соединения\n"
-        "• Стабильная работа\n"
-        "• 3 устройства на одной подписке\n"
-        "• Демократичная цена\n"
-        "• Прямая линия с поддержкой\n\n"
-        "📦 <b>После оплаты вы получите:</b>\n"
-        "• Конфиг для подключения\n"
-        "• Пошаговую инструкцию\n\n"
-        "💰 <b>Цена:</b>\n"
-        f"{PRICE_PER_MONTH}₽ / месяц и использование на 3 устройствах\n\n"
-        "❓ <b>Оформляем?</b>",
-        parse_mode="HTML",
-        reply_markup=markup
-    )
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("offer:"))
 def handle_offer_response(call):
@@ -1077,6 +1017,7 @@ def handle_offer_response(call):
 def menu_handler(message):
     tg_id = message.from_user.id
     text = message.text.strip()
+    uid = get_or_create_uid(tg_id)
 
     if tg_id in blocked_users:
         return
@@ -1096,7 +1037,7 @@ def menu_handler(message):
             return
 
     if text == "📦 Моя подписка":
-        sub(tg_id, message)
+        sub(uid, message)
     elif text == "🔄 Продлить подписку":
         pending_requests[tg_id] = {"flow": "renew"}
         markup = types.InlineKeyboardMarkup(row_width=1)
@@ -1218,183 +1159,36 @@ def show_users(message):
     for i in range(0, len(result), 4000):
         bot.send_message(message.chat.id, result[i:i+4000])
 
-# ==================== ДОБАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯ ====================
-@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "➕ Добавить пользователя")
-def ask_add_user(message):
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(types.InlineKeyboardButton("♾ Бессрочно", callback_data="admin_add:unlimited"))
-    markup.add(types.InlineKeyboardButton("📅 На 1 месяц", callback_data="admin_add:1"))
-    markup.add(types.InlineKeyboardButton("📅 На несколько месяцев", callback_data="admin_add:multi"))
+@bot.message_handler(func=lambda m:
+    m.from_user.id == ADMIN_ID and m.text == "➕ Добавить пользователя")
+def ask_add_unlimited_user(message):
+    msg = bot.send_message(
+        message.chat.id,
+        "➕ Введите **Email** для бессрочного пользователя:\n"
+    )
+    bot.register_next_step_handler(msg, process_add_unlimited_by_email)
 
-    bot.send_message(message.chat.id, "Как добавить пользователя?", reply_markup=markup)
 
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_add:"))
-def admin_add_choice(call):
-    action = call.data.split(":")[1]
-    if action == "unlimited":
-        msg = bot.send_message(call.message.chat.id, "Введите Email для бессрочного пользователя:")
-        bot.register_next_step_handler(msg, admin_add_unlimited_by_email)
-    else:
-        msg = bot.send_message(call.message.chat.id, "Введите Email для нового пользователя:")
-        bot.register_next_step_handler(msg, admin_add_by_email_step, action)
-
-    bot.answer_callback_query(call.id)
-
-def admin_add_unlimited_by_email(message):
+def process_add_unlimited_by_email(message):
     if message.from_user.id != ADMIN_ID:
         return
+
     email = message.text.strip().lower()
+
     success, error_msg, base_name, uid, sub_id = create_unlimited_by_email(email)
+
     if success:
         sub_link = f"{XUI_SUB_LINK}/{sub_id}"
         bot.send_message(
             message.chat.id,
             f"✅ Бессрочный пользователь успешно создан!\n\n"
-            f"🆔 UID: {uid}\n"
-            f"📧 Email: {base_name}\n"
-            f"🔗 Ссылка на подписку:\n\n<code>{sub_link}</code>\n\n",
+            f"🆔 UID: <b>{uid}</b>\n"
+            f"📧 Email: <code>{base_name}</code>\n"
+            f"🔗 Ссылка:\n<code>{sub_link}</code>",
             parse_mode="HTML"
         )
     else:
         bot.send_message(message.chat.id, f"❌ Ошибка:\n{error_msg}")
-
-def admin_add_by_email_step(message, period_type):
-    email = message.text.strip().lower()
-    if not email:
-        bot.send_message(message.chat.id, "❌ Email не может быть пустым.")
-        return
-
-    try:
-        months = 1 if period_type == "1" else None
-
-        if months is None:  # несколько месяцев
-            msg = bot.send_message(message.chat.id, "Введите количество месяцев (1-12):")
-            bot.register_next_step_handler(msg, admin_add_multi_by_email, email)
-            return
-
-        # Добавление на 1 месяц
-        success, error_msg, base_name, expiry_ms, sub_id = create_vpn_client(0, email, months=1)
-        if success:
-            uid = get_or_create_uid()  # создаём новый UID
-            save_user_for_admin(uid, base_name, sub_id, expiry_ms)  # новая функция
-            sub_link = f"{XUI_SUB_LINK}/{sub_id}"
-            expiry_date = datetime.fromtimestamp(expiry_ms / 1000).strftime("%d.%m.%Y %H:%M")
-
-            bot.send_message(
-                message.chat.id,
-                f"✅ Пользователь успешно создан на 1 месяц!\n\n"
-                f"🆔 UID: {uid}\n"
-                f"📧 Email: {base_name}\n"
-                f"🔗 Ссылка на подписку:\n\n<code>{sub_link}</code>\n\n"
-                f"Действует до: {expiry_date}",
-                parse_mode="HTML"
-            )
-        else:
-            bot.send_message(message.chat.id, f"❌ Ошибка создания: {error_msg}")
-    except Exception as e:
-        bot.send_message(message.chat.id, "❌ Произошла ошибка.")
-
-
-def admin_add_multi_by_email(message, email):
-    try:
-        months = int(message.text.strip())
-        if months < 1 or months > 12:
-            raise ValueError
-
-        success, error_msg, base_name, expiry_ms, sub_id = create_vpn_client(0, email, months)
-
-        if success:
-            uid = get_or_create_uid()
-            save_user_for_admin(uid, base_name, sub_id, expiry_ms)
-            sub_link = f"{XUI_SUB_LINK}/{sub_id}"
-            expiry_date = datetime.fromtimestamp(expiry_ms / 1000).strftime("%d.%m.%Y %H:%M")
-
-            bot.send_message(
-                message.chat.id,
-                f"✅ Пользователь успешно создан на {months} месяцев!\n\n"
-                f"🆔 UID: {uid}\n"
-                f"📧 Email: {base_name}\n\n"
-                f"🔗 Ссылка на подписку:\n\n<code>{sub_link}</code>\n\n"
-                f"Действует до: {expiry_date}",
-                parse_mode="HTML"
-            )
-        else:
-            bot.send_message(message.chat.id, f"❌ Ошибка: {error_msg}")
-    except ValueError:
-        bot.send_message(message.chat.id, "❌ Введите корректное число месяцев (1-12).")
-
-    except Exception as e:
-        print(f"admin_add_multi_by_email error: {e}")
-        bot.send_message(message.chat.id, f"❌ Ошибка:\n{e}")
-
-# Сохраняет пользователя, добавленного админом
-def save_user_for_admin(uid: int, email: str, sub_id: str, expiry_time):
-    if os.path.exists("users.json"):
-        with open("users.json", "r", encoding="utf-8") as f:
-            data = json.load(f)
-    else:
-        data = {}
-
-    key = f"uid_{uid}"
-    data[key] = {
-        "uid": uid,
-        "email": email,
-        "username": "admin_added",
-        "status": "approved",
-        "expiry_time": expiry_time,
-        "sub_id": sub_id,
-        "tg_id": None
-    }
-
-    with open("users.json", "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-
-# ==================== ПРОДЛЕНИЕ ПОЛЬЗОВАТЕЛЯ ====================
-@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "🔄 Продлить по UID")
-def ask_renew_by_admin(message):
-    msg = bot.send_message(message.chat.id, "Введите UID пользователя для продления:")
-    bot.register_next_step_handler(msg, admin_renew_step1)
-
-
-def admin_renew_step1(message):
-    try:
-        uid = int(message.text.strip())
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(types.InlineKeyboardButton("📅 Продлить на 1 месяц", callback_data=f"admin_renew:1:{uid}"))
-        markup.add(types.InlineKeyboardButton("📅 Продлить на несколько месяцев", callback_data=f"admin_renew:multi:{uid}"))
-        bot.send_message(message.chat.id, f"Продлеваем пользователя с UID {uid}:", reply_markup=markup)
-    except:
-        bot.send_message(message.chat.id, "❌ Введите корректный UID (число).")
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_renew:"))
-def admin_renew_choice(call):
-    _, period, uid_str = call.data.split(":")
-    uid = int(uid_str)
-
-    if period == "1":
-        # Нужно найти tg_id или email по UID
-        success, msg = renew_by_uid(uid, months=1)
-        bot.send_message(call.message.chat.id, msg)
-    else:
-        msg = bot.send_message(call.message.chat.id, "Введите количество месяцев:")
-        bot.register_next_step_handler(msg, admin_renew_multi, uid)
-    bot.answer_callback_query(call.id)
-
-def admin_renew_multi(message, tg_id):
-    try:
-        months = int(message.text.strip())
-        if months < 1 or months > 12:
-            raise ValueError
-        success, error_msg, email, expiry_ms = renew_vpn_client(tg_id, months)
-        if success:
-            bot.send_message(message.chat.id, f"✅ Продлено на {months} месяцев (TG: {tg_id})")
-            admin_notify(tg_id, "admin", email, months, PRICE_PER_MONTH*months*100, f"Продление админом ({months} мес)")
-        else:
-            bot.send_message(message.chat.id, "❌ Ошибка продления")
-    except:
-        bot.send_message(message.chat.id, "❌ Введите корректное число")
 
 @bot.message_handler(func=lambda m:
     m.from_user.id == ADMIN_ID and m.text == "🗑 Удалить пользователя")
@@ -1430,7 +1224,6 @@ if __name__ == '__main__':
     lock_file = acquire_lock()
     try:
         load_users()
-        start_expiry_checker()
         print("Bot successfully started")
         bot.infinity_polling(skip_pending=True)
     except Exception as e:
