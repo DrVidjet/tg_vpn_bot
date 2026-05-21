@@ -1234,13 +1234,30 @@ def admin_add_choice(call):
     action = call.data.split(":")[1]
     if action == "unlimited":
         msg = bot.send_message(call.message.chat.id, "Введите Email для бессрочного пользователя:")
-        bot.register_next_step_handler(msg, process_add_unlimited_by_email)
+        bot.register_next_step_handler(msg, admin_add_unlimited_by_email)
     else:
         msg = bot.send_message(call.message.chat.id, "Введите Email для нового пользователя:")
         bot.register_next_step_handler(msg, admin_add_by_email_step, action)
 
     bot.answer_callback_query(call.id)
 
+def admin_add_unlimited_by_email(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    email = message.text.strip().lower()
+    success, error_msg, base_name, uid, sub_id = create_unlimited_by_email(email)
+    if success:
+        sub_link = f"{XUI_SUB_LINK}/{sub_id}"
+        bot.send_message(
+            message.chat.id,
+            f"✅ Бессрочный пользователь успешно создан!\n\n"
+            f"🆔 UID: {uid}\n"
+            f"📧 Email: {base_name}\n"
+            f"🔗 Ссылка:\n{sub_link}",
+            parse_mode="HTML"
+        )
+    else:
+        bot.send_message(message.chat.id, f"❌ Ошибка:\n{error_msg}")
 
 def admin_add_by_email_step(message, period_type):
     email = message.text.strip().lower()
@@ -1261,7 +1278,16 @@ def admin_add_by_email_step(message, period_type):
         if success:
             uid = get_or_create_uid()  # создаём новый UID
             save_user_for_admin(uid, base_name, sub_id, expiry_ms)  # новая функция
-            bot.send_message(message.chat.id, f"✅ Пользователь успешно добавлен на 1 месяц.\nEmail: {base_name}\nUID: {uid}")
+            sub_link = f"{XUI_SUB_LINK}/{sub_id}"
+            bot.send_message(
+                message.chat.id,
+                f"✅ Пользователь успешно создан на 1 месяц!\n\n"
+                f"🆔 UID: {uid}\n"
+                f"📧 Email: {base_name}\n"
+                f"🔗 Ссылка:\n{sub_link}\n\n",
+                f"Действует до: {expiry_ms}"
+                parse_mode="HTML"
+            )
         else:
             bot.send_message(message.chat.id, f"❌ Ошибка создания: {error_msg}")
     except Exception as e:
@@ -1278,7 +1304,15 @@ def admin_add_multi_by_email(message, email):
         if success:
             uid = get_or_create_uid()
             save_user_for_admin(uid, base_name, sub_id, expiry_ms)
-            bot.send_message(message.chat.id, f"✅ Пользователь успешно добавлен на {months} месяцев.\nEmail: {base_name}\nUID: {uid}")
+            bot.send_message(
+                message.chat.id,
+                f"✅ Пользователь успешно создан на {months} месяцев!\n\n"
+                f"🆔 UID: {uid}\n"
+                f"📧 Email: {base_name}\n\n"
+                f"🔗 Ссылка:\n{sub_link}\n\n",
+                f"Действует до: {expiry_ms}"
+                parse_mode="HTML"
+            )
         else:
             bot.send_message(message.chat.id, f"❌ Ошибка: {error_msg}")
     except:
