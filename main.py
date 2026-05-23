@@ -286,7 +286,7 @@ def save_user(uid, tg_id, email=None, username=None, status="approved", expiry_t
         if expiry_time is None:
             expiry_time = int((datetime.now() + timedelta(days=XUI_EXPIRY_DAYS)).timestamp() * 1000)
         data[key] = {
-            "tg_id": tg_id or "unlimited",
+            "tg_id": tg_id or "by_admin",
             "email": email,
             "username": username or "no_username",
             "status": status,
@@ -651,7 +651,7 @@ def ask_vpn_offer(chat_id):
         "🔥 <b>Добро пожаловать в VidjetVPN</b> 🔥\n\n"
         "🌍 <b>Доступные серверы:</b>\n"
         "• 🇸🇪 Стокгольм ×2\n"
-        "• 🇫🇮 Хельсинки ×1\n"
+        "• 🇫🇮 Хельсинки ×2\n"
         "• 🇩🇪 Берлин ×1\n\n"
         "🏴‍☠ Интернет в этих регионах свободный, без ограничений!\n\n"
         "⚡ <b>Преимущества:</b>\n"
