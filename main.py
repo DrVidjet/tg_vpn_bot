@@ -108,7 +108,7 @@ def get_inbound_remarks():
 def create_vpn_client(uid: int, tg_id: str = None, username: str = None, months: int = 1):
     if not tg_id:
         tg_id = "by_admin"
-    base_name = f"{uid}_{username}_{tg_id}" if username and username != "no_username" else f"{uid}_no_username_{tg_id}"
+    base_name = f"{uid}_{username}_{tg_id}"
     if months != 0:
         expiry_date = datetime.now() + timedelta(days=XUI_EXPIRY_DAYS * months)
         expiry_ms = int(expiry_date.timestamp() * 1000)
@@ -392,6 +392,82 @@ def get_user_by_tg_id(tg_id):
 
     return None, None
 
+# Поиск пользователя по username
+def get_user_by_username(username):
+    if not os.path.exists("users.json"):
+        return None, None
+
+    username = username.lower().replace("@", "").strip()
+
+    with open("users.json", "r", encoding="utf-8") as f:
+        users = json.load(f)
+
+    for uid_key, user_data in users.items():
+        saved_username = user_data.get("username", "").lower().replace("@", "").strip()
+        if saved_username == username:
+            return uid_key, user_data
+
+    return None, None
+
+# Обновление tgId в 3x-ui после привязки пользователя
+def update_tg_id_in_xui(uid: str, tg_id: int):
+    try:
+        with open("users.json", "r", encoding="utf-8") as f:
+            users = json.load(f)
+
+        user_data = users.get(str(uid))
+        if not user_data or not user_data.get("email"):
+            return False
+
+        base_email = user_data["email"]
+        success_count = 0
+
+        for inbound_id in XUI_INBOUND_IDS:
+            search_email = f"{base_email}@inbound{inbound_id}"
+
+            # Получаем inbound
+            r = requests.get(
+                f"{XUI_URL}/panel/api/inbounds/get/{inbound_id}",
+                headers=headers,
+                timeout=15
+            )
+            if r.status_code != 200 or not r.json().get("success"):
+                continue
+
+            inbound = r.json().get("obj")
+            settings = json.loads(inbound.get("settings", "{}"))
+            clients = settings.get("clients", [])
+
+            updated = False
+            for client in clients:
+                if client.get("email") == search_email:
+                    client["tgId"] = str(tg_id)
+                    updated = True
+                    break
+
+            if updated:
+                payload = {
+                    "id": inbound_id,
+                    "settings": json.dumps({"clients": [client]})
+                }
+
+                update = requests.post(
+                    f"{XUI_URL}/panel/api/inbounds/updateClient/{client['id']}",
+                    headers=headers,
+                    json=payload,
+                    timeout=15
+                )
+
+                if update.status_code == 200 and update.json().get("success"):
+                    success_count += 1
+                    print(f"✅ Обновлён tgId в inbound {inbound_id}")
+
+        return success_count > 0
+
+    except Exception as e:
+        print(f"Ошибка обновления tgId в 3x-ui: {e}")
+        return False
+
 # Информация о подписке
 def sub(tg_id, message):
     try:
@@ -405,7 +481,7 @@ def sub(tg_id, message):
             sub_id = user_data.get("sub_id")
 
             if not expiry_ms or not sub_id:
-                bot.send_message(message.chat.id, "❌ Данные подписки неполные.")
+                bot.send_message(message.chat.id, "❌ Данные подписки неполные.", reply_markup=main_menu())
                 return
 
             moscow_tz = ZoneInfo("Europe/Moscow")
@@ -422,13 +498,15 @@ def sub(tg_id, message):
                 f"<code>{sub_link}</code>\n\n"
                 f"📅 <b>Действует до:</b> {expiry_date} (МСК)\n\n"
                 "❤️ Спасибо, что вы с нами!",
-                parse_mode="HTML"
+                parse_mode="HTML",
+                reply_markup=main_menu()
             )
         except Exception as e:
             print("Ошибка парсинга списка пользователей по tg_id")
             bot.send_message(
                 message.chat.id,
-                "❌ Не удалось загрузить информацию о подписке."
+                "❌ Не удалось загрузить информацию о подписке.",
+                reply_markup=main_menu()
             )
 
     except Exception as e:
@@ -634,40 +712,52 @@ def get_price_per_month(months: int) -> int:
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     tg_id = message.from_user.id
+    username = (message.from_user.username or "no_username").lower().replace("@", "")
     loading_msg = bot.send_message(message.chat.id, "⌛", reply_markup=types.ReplyKeyboardRemove())
 
-    user_data = None
-
     try:
+        # 1. Ищем по tg_id
         uid, user_data = get_user_by_tg_id(tg_id)
+
+        if user_data and user_data.get("status") == "approved":
+            try:
+                bot.delete_message(message.chat.id, loading_msg.message_id)
+            except:
+                pass
+            bot.send_message(message.chat.id, "Добро пожаловать 👇", reply_markup=main_menu())
+            return
+
+        # 2. Ищем по username (пользователь добавлен админом)
+        if username and username != "no_username":
+            uid_by_name, user_by_name = get_user_by_username(username)
+            if user_by_name and user_by_name.get("status") == "approved":
+                # Привязываем tg_id
+                save_user(uid_by_name, tg_id, None, username, "approved")
+                print(f"✅ Привязан tg_id {tg_id} к пользователю @{username} (UID: {uid_by_name})")
+
+                # Обновляем tgId в 3x-ui
+                update_tg_id_in_xui(uid_by_name, tg_id)
+
+                try:
+                    bot.delete_message(message.chat.id, loading_msg.message_id)
+                except:
+                    pass
+                bot.send_message(message.chat.id, "Добро пожаловать 👇", reply_markup=main_menu())
+                return
+
     except Exception as e:
-        print(f"Ошибка получения пользователя {tg_id} из users.json")
-        bot.send_message(message.chat.id,
-            f"Ошибка получения данных. Пожалуйста, обратитесь в поддержку: {SUPPORT}")
+        print(f"Ошибка в start_handler: {e}")
 
-
-    if user_data and user_data.get("status") == "approved":
-        try:
-            bot.delete_message(message.chat.id, loading_msg.message_id)
-        except:
-            pass
-
-        bot.send_message(
-            message.chat.id,
-            "Добро пожаловать 👇",
-            reply_markup=main_menu()
-        )
-        return
-
+    # Пользователь в процессе оплаты
     if tg_id in pending_requests:
         try:
             bot.delete_message(message.chat.id, loading_msg.message_id)
         except:
             pass
-
         bot.send_message(message.chat.id, "🕚 Жду подтверждения")
         return
 
+    # Новый пользователь
     ask_vpn_offer(message.chat.id)
 
 # Первичный оффер
@@ -853,7 +943,6 @@ def handle_cancel(call):
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "📦 Моя подписка")
 def subscribe_handler(message):
     tg_id = message.from_user.id
-    text = message.text.strip()
     sub(tg_id, message)
 
 
@@ -907,14 +996,14 @@ def handle_renew_choice(call):
 # ====================== Реакция на кнопку "Инструкция"  =======================
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "📑 Инструкция")
 def support_handler(message):
-    bot.send_message(message.chat.id, instruction_send(message.chat.id))
+    bot.send_message(message.chat.id, instruction_send(message.chat.id), reply_markup=main_menu())
 
 
 
 # ====================== Реакция на кнопку "Поддержка"  =======================
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "📩 Поддержка")
 def support_handler(message):
-    bot.send_message(message.chat.id, support_contact())
+    bot.send_message(message.chat.id, support_contact(), reply_markup=main_menu())
 
 
 
@@ -1069,12 +1158,35 @@ def get_all_users_traffic():
 # ====================== Реакция на кнопку "Добавить пользователя"  =================
 @bot.message_handler(func=lambda m:
     m.from_user.id == ADMIN_ID and m.text == "➕ Добавить пользователя")
-def process_ask_email(message):
+# Спрашиваем username
+def process_ask_username(message):
     if message.from_user.id != ADMIN_ID:
         return
-    msg = bot.send_message(message.chat.id, "📧 Введите email пользователя:")
+    msg = bot.send_message(
+        message.chat.id,
+        "👤 Введите @username пользователя (например: @ivan123)\n\n"
+        "Если username неизвестен — напишите `-`"
+    )
+    bot.register_next_step_handler(msg, admin_process_ask_email)
+
+# Спрашиваем email
+def admin_process_ask_email(message):
+    input_text = message.text.strip()
+
+    global admin_given_username
+
+    if input_text == "-":
+        admin_given_username = "no_username"
+        bot.send_message(message.chat.id, "✅ Username пропущен (no_username)")
+    else:
+        admin_given_username = input_text.replace("@", "").strip().lower()
+        bot.send_message(message.chat.id, f"✅ Username сохранён: @{admin_given_username}")
+
+    # Переходим к Email
+    msg = bot.send_message(message.chat.id, "📧 Введите Email (base name) для клиента:")
     bot.register_next_step_handler(msg, admin_process_ask_time_new)
 
+# Спрашиваем время подписки
 def admin_process_ask_time_new(message):
 
     base_name = message.text.strip().lower()
@@ -1121,29 +1233,41 @@ def admin_add_multi_months(message):
 
 # Добавление пользователя через админа
 def admin_add_user(message, months):
-    global admin_given_email
+    global admin_given_email, admin_given_username
     tg_id = None
     uid = get_or_create_uid(tg_id)
-
 
     success, error_msg, email, expiry_ms, sub_id = create_vpn_client(uid, tg_id, admin_given_email, months)
 
     if success:
-        save_user(uid, tg_id, email, admin_given_email, "approved", expiry_ms, sub_id)
+        save_user(uid, tg_id, email, admin_given_username, "approved", expiry_ms, sub_id)
+
         moscow_tz = ZoneInfo("Europe/Moscow")
-        expiry_date = "БЕССРОЧНО" if expiry_ms == 0 else datetime.fromtimestamp(expiry_ms / 1000, tz=moscow_tz).strftime("%d.%m.%Y %H:%M (МСК)")
+        expiry_date = "БЕССРОЧНО" if expiry_ms == 0 else datetime.fromtimestamp(
+            expiry_ms / 1000, tz=moscow_tz
+        ).strftime("%d.%m.%Y %H:%M (МСК)")
+
         sub_link = f"{XUI_SUB_LINK}/{sub_id}"
+
+        username_display = admin_given_username if admin_given_username != "no_username" else "нет"
+
         bot.send_message(
             message.chat.id,
             f"✅ Пользователь успешно создан!\n\n"
             f"🆔 UID: <b>{uid}</b>\n"
+            f"👤 Username: @{username_display}\n"
             f"📧 Email: <code>{email}</code>\n"
             f"📅 <b>Действует до:</b> {expiry_date}\n\n"
             f"🔗 Ссылка:\n<code>{sub_link}</code>",
             parse_mode="HTML",
             reply_markup=admin_panel()
         )
+    else:
+        bot.send_message(message.chat.id, f"❌ Ошибка создания: {error_msg}")
+
+    # Очистка
     admin_given_email = None
+    admin_given_username = None
 
 
 
