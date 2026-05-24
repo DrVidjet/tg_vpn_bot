@@ -1482,7 +1482,8 @@ def admin_renew_user(message, months):
                     f"🔄 Ваша подписка была продлена администратором на {period_text}🎉🎉🎉\n\n"
                     f"📅 Новая дата окончания: {expiry_date}\n\n"
                     f"🔗 Ссылка:\n<code>{sub_link}</code>",
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    reply_markup=main_menu()
                 )
 
             except Exception as e:
