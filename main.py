@@ -976,11 +976,23 @@ def subscribe_handler(message):
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "🔄 Продлить подписку")
 def renew_handler(message):
     tg_id = message.from_user.id
-    text = message.text.strip()
 
-    if tg_id in pending_requests and text != "📩 Поддержка":
-        flow = pending_requests[tg_id].get("flow")
+    # Получаем данные пользователя
+    uid, user_data = get_user_by_tg_id(tg_id)
 
+    # Проверка на бессрочную подписку
+    if user_data and user_data.get("expiry_time") == 0:
+        bot.send_message(
+            message.chat.id,
+            "♾ <b>У вас бессрочная подписка!</b>\n\n"
+            "Продлевать её не нужно 😉\n\n"
+            "Приятного использования VidjetVPN! ❤️",
+            parse_mode="HTML",
+            reply_markup=main_menu()
+        )
+        return
+
+    # Обычная логика продления (для пользователей со сроком)
     pending_requests[tg_id] = {"flow": "renew"}
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
