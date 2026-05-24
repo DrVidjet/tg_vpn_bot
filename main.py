@@ -503,7 +503,7 @@ def sub(tg_id, message):
             expiry_ms = user_data.get("expiry_time")
             sub_id = user_data.get("sub_id")
 
-            if not expiry_ms or not sub_id:
+            if  not sub_id:
                 bot.send_message(message.chat.id, "❌ Данные подписки неполные.", reply_markup=main_menu())
                 return
 
