@@ -520,7 +520,7 @@ def sub(tg_id, message):
                 "📦 <b>Ваша подписка</b>\n\n"
                 f"🔗 <b>Ссылка:</b>\n"
                 f"<code>{sub_link}</code>\n\n"
-                f"📅 <b>Действует до:</b> {expiry_date} (МСК)\n\n"
+                f"📅 <b>Действует до:</b> {expiry_date}\n\n"
                 "❤️ Спасибо, что вы с нами!",
                 parse_mode="HTML",
                 reply_markup=main_menu()
