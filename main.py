@@ -1006,6 +1006,7 @@ def renew_handler(message):
         f"{get_price_per_month(3)}₽ / от трёх месяцев\n"
         f"{get_price_per_month(8)}₽ / от восьми месяцев\n\n"
         "🔄 Выберите срок продления:",
+        parse_mode="HTML",
         reply_markup=markup
     )
 
