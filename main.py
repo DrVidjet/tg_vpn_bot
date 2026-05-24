@@ -1107,7 +1107,7 @@ def show_users_list(message, filter_type="all"):
     all_traffic = get_all_users_traffic()
     online_clients = get_online_clients()
 
-    result = f"👥 Пользователи — {filter_type.upper()}\n\n{'─' * 20}\n\n"
+    result = f"👥 Пользователи — {filter_type.upper()}\n\n{'─' * 18}\n\n"
     count = 0
 
     for key, info in users.items():
@@ -1150,9 +1150,9 @@ def show_users_list(message, filter_type="all"):
             f"STATUS: {status}\n"
             f"ONLINE: {'🟢' if online else '🔴'}\n"
             f"UP: {up} GB | DOWN: {down} GB\n"
-            f"EXPIRE: {expiry_date}\n"
+            f"EXPIRE: {expiry_date}\n\n"
             f"SUB: <code>{XUI_SUB_LINK}/{sub_id}</code>\n"
-            f"{'─' * 20}\n\n"
+            f"{'─' * 18}\n\n"
         )
         count += 1
 
