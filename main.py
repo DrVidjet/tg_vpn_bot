@@ -51,7 +51,12 @@ headers = {
 }
 
 # Инициализируем бота
-bot = telebot.TeleBot(API_TOKEN)
+bot = telebot.TeleBot(API_TOKEN,
+                      parse_mode=None,
+                      disable_web_page_preview=False)
+
+# Увеличиваем таймауты
+bot.enable_save_next_step_handlers(delay=2)
 
 # ====================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ======================
 pending_requests = {}
@@ -345,6 +350,24 @@ def instruction_send(tg_id):
 # Контакт поддержки
 def support_contact():
     return f"📩 Поддержка\n👤 Напишите сюда: {SUPPORT}\n\n⏱ Мы ответим вам как можно скорее."
+
+# Надёжная отправка сообщений с повторными попытками
+def safe_send_message(chat_id, text, parse_mode="HTML", reply_markup=None, max_retries=3):
+    for attempt in range(max_retries):
+        try:
+            return bot.send_message(
+                chat_id,
+                text,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            print(f"Попытка {attempt+1}/{max_retries} отправки сообщения не удалась: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(1.5 * (attempt + 1))  # увеличиваем задержку
+            else:
+                print(f"Не удалось отправить сообщение пользователю {chat_id} после {max_retries} попыток")
+                return None
 
 # Функция подгрузки tg пользователей
 def load_users():
@@ -829,7 +852,8 @@ def successful_payment(message):
     flow = data.get("flow", "new")   # "new" или "renew"
     username = message.from_user.username or "no_username"
 
-    bot.send_message(tg_id, "✅ Оплата прошла успешно! Активируем подписку...")
+    # Надёжная отправка
+    safe_send_message(tg_id, "✅ Оплата прошла успешно! Активируем подписку...")
 
     if flow == "new":
         # === НОВАЯ ПОДПИСКА ===
@@ -995,8 +1019,8 @@ def handle_renew_choice(call):
 
 # ====================== Реакция на кнопку "Инструкция"  =======================
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "📑 Инструкция")
-def support_handler(message):
-    bot.send_message(message.chat.id, instruction_send(message.chat.id), reply_markup=main_menu())
+def instruction_handler(message):
+    instruction_send(message.chat.id)
 
 
 
@@ -1031,26 +1055,60 @@ def is_admin(user_id):
 
 # ====================== Реакция на кнопку "Пользователи"  =======================
 @bot.message_handler(func=lambda m:
-    m.from_user.id == ADMIN_ID and
-    m.text == "👥 Пользователи"
+    m.from_user.id == ADMIN_ID and m.text == "👥 Пользователи"
 )
 def show_users(message):
     if not is_admin(message.from_user.id):
         return
-    # Создаём файл если его нет
+
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton("📋 Все пользователи", callback_data="users_filter:all"),
+        types.InlineKeyboardButton("⏳ Срочные (срок)", callback_data="users_filter:limited"),
+        types.InlineKeyboardButton("♾ Бессрочные", callback_data="users_filter:unlimited")
+    )
+
+    bot.send_message(
+        message.chat.id,
+        "👥 Выберите фильтр пользователей:",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("users_filter:"))
+def users_filter_callback(call):
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "Нет доступа")
+        return
+
+    filter_type = call.data.split(":")[1]
+
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+    if filter_type == "all":
+        show_users_list(call.message, "all")
+    elif filter_type == "limited":
+        show_users_list(call.message, "limited")
+    elif filter_type == "unlimited":
+        show_users_list(call.message, "unlimited")
+
+    bot.answer_callback_query(call.id)
+
+def show_users_list(message, filter_type="all"):
     if not os.path.exists("users.json"):
-        with open("users.json", "w", encoding="utf-8") as f:
-            json.dump({}, f, ensure_ascii=False, indent=4)
+        bot.send_message(message.chat.id, "users.json не найден")
+        return
 
     with open("users.json", "r", encoding="utf-8") as f:
         users = json.load(f)
 
     all_traffic = get_all_users_traffic()
     online_clients = get_online_clients()
-    result = (
-        "👥 Пользователи:\n\n"
-        f"{'─' * 15}\n\n"
-    )
+
+    result = f"👥 Пользователи — {filter_type.upper()}\n\n{'─' * 20}\n\n"
+    count = 0
 
     for key, info in users.items():
         uid = key
@@ -1061,8 +1119,16 @@ def show_users(message):
         expiry = info.get("expiry_time", 0)
         sub_id = info.get("sub_id", "-")
 
+        # Фильтрация
+        if filter_type == "limited" and expiry == 0:
+            continue
+        if filter_type == "unlimited" and expiry != 0:
+            continue
+
         moscow_tz = ZoneInfo("Europe/Moscow")
-        expiry_date = "БЕССРОЧНО" if expiry == 0 else datetime.fromtimestamp(expiry / 1000, tz=moscow_tz).strftime("%d.%m.%Y %H:%M")
+        expiry_date = "♾ БЕССРОЧНО" if expiry == 0 else datetime.fromtimestamp(
+            expiry / 1000, tz=moscow_tz
+        ).strftime("%d.%m.%Y %H:%M")
 
         online = False
         if email:
@@ -1072,26 +1138,28 @@ def show_users(message):
                     online = True
                     break
 
-
         traffic_data = all_traffic.get(email, {})
         up = round(traffic_data.get("up", 0) / (1024**3), 2)
         down = round(traffic_data.get("down", 0) / (1024**3), 2)
 
         result += (
-            f"UID: {uid}\n"
+            f"UID: <b>{uid}</b>\n"
             f"TG_ID: {tg_id}\n"
             f"USER: @{username}\n"
-            f"EMAIL: {email}\n"
+            f"EMAIL: <code>{email}</code>\n"
             f"STATUS: {status}\n"
             f"ONLINE: {'🟢' if online else '🔴'}\n"
-            f"UP: {up} GB\n"
-            f"DOWN: {down} GB\n"
-            f"EXPIRE: {expiry_date}\n\n"
-            f"SUB_ID:\n<code>{XUI_SUB_LINK}/{sub_id}</code>\n\n"
-            f"{'─' * 15}\n\n"
+            f"UP: {up} GB | DOWN: {down} GB\n"
+            f"EXPIRE: {expiry_date}\n"
+            f"SUB: <code>{XUI_SUB_LINK}/{sub_id}</code>\n"
+            f"{'─' * 20}\n\n"
         )
+        count += 1
 
-    # Отправляем частями, если слишком длинное сообщение
+    if count == 0:
+        result += "Пользователей по данному фильтру не найдено."
+
+    # Отправляем частями
     for i in range(0, len(result), 4000):
         bot.send_message(message.chat.id, result[i:i+4000], parse_mode="HTML")
 
@@ -1164,7 +1232,7 @@ def process_ask_username(message):
         return
     msg = bot.send_message(
         message.chat.id,
-        "👤 Введите @username пользователя (например: @ivan123)\n\n"
+        "👤 Введите @username пользователя\n\n"
         "Если username неизвестен — напишите `-`"
     )
     bot.register_next_step_handler(msg, admin_process_ask_email)
