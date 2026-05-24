@@ -1064,8 +1064,8 @@ def show_users(message):
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
         types.InlineKeyboardButton("📋 Все пользователи", callback_data="users_filter:all"),
-        types.InlineKeyboardButton("⏳ Срочные (срок)", callback_data="users_filter:limited"),
-        types.InlineKeyboardButton("♾ Бессрочные", callback_data="users_filter:unlimited")
+        types.InlineKeyboardButton("⏳ Платные", callback_data="users_filter:limited"),
+        types.InlineKeyboardButton("♾ Бесплатные", callback_data="users_filter:unlimited")
     )
 
     bot.send_message(
@@ -1151,7 +1151,7 @@ def show_users_list(message, filter_type="all"):
             f"ONLINE: {'🟢' if online else '🔴'}\n"
             f"UP: {up} GB | DOWN: {down} GB\n"
             f"EXPIRE: {expiry_date}\n\n"
-            f"SUB: <code>{XUI_SUB_LINK}/{sub_id}</code>\n"
+            f"SUB: <code>{XUI_SUB_LINK}/{sub_id}</code>\n\n"
             f"{'─' * 18}\n\n"
         )
         count += 1
