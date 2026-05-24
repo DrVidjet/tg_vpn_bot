@@ -509,8 +509,9 @@ def sub(tg_id, message):
 
             moscow_tz = ZoneInfo("Europe/Moscow")
 
-            expiry_date = datetime.fromtimestamp(
-                expiry_ms / 1000, tz=moscow_tz).strftime("%d.%m.%Y %H:%M")
+            expiry_date = "БЕССРОЧНО" if expiry_ms == 0 else datetime.fromtimestamp(
+                expiry_ms / 1000, tz=moscow_tz
+            ).strftime("%d.%m.%Y %H:%M (МСК)")
 
             sub_link = f"{XUI_SUB_LINK}/{sub_id}"
 
