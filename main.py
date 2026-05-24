@@ -56,11 +56,10 @@ bot = telebot.TeleBot(API_TOKEN)
 # ====================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ======================
 pending_requests = {}
 user_ids = {}
-blocked_users = set()
-approved_users = set()
 LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bot.lock')
 uid_counter = 1
 admin_given_email = None
+admin_given_username = None
 admin_renew_uid = 0
 
 
@@ -323,6 +322,26 @@ def acquire_lock():
         sys.exit(1)
     return lock_file
 
+# Отправка инструкций
+def instruction_send(tg_id):
+    bot.send_message(
+        tg_id,
+        "📋 <b>Инструкция по подключению:</b>\n\n"
+        "1. Скачайте приложение v2raytun\n"
+        "Android: https://play.google.com/store/apps/details?id=com.v2raytun.android\n"
+        "IOS: https://apps.apple.com/kz/app/v2raytun/id6476628951\n"
+        "Windows, MAC, Linux: https://v2raytun.com/\n"
+        "А так же другие клиенты и инструкции к ним можно посмотреть по этой ссылке:\n https://gist.github.com/kksudo/9e2072b3c60a72040f4e9d6fb9da7e9c\n\n"
+        "2. Для Android и IOS следуйте видеоинструкции ниже. На IOS пропускаем часть с маршрутизацией приложений.\n\n"
+        "3. Пользуемся подключениями:\n 🏴‍☠Устройство-1,2,3\nВнешние сервера:\n🇫🇮HELSINKI, 🇸🇪STOKGOLM и тд\nиспользуем только если основное подключение отвалилось!\n\n"
+        "4. Одно устройство - 1 подключение. Что это значит? Например хотим сидеть с ноутбука и с телефона. На ноутбуке выбираем 🏴‍☠Устройство-1, на телефоне 🏴‍☠Устройство-2. СИДЕТЬ С ДВУХ УСТРОЙСТВ НА ОДНОМ ПОДКЛЮЧЕНИИ НЕЛЬЗЯ!\n\n"
+        f"Если будут вопросы — 👤 Напишите сюда: {SUPPORT}\n⏱ Мы ответим вам как можно скорее.",
+        parse_mode="HTML"
+    )
+
+    send_instruction_video(tg_id)
+
+
 # Контакт поддержки
 def support_contact():
     return f"📩 Поддержка\n👤 Напишите сюда: {SUPPORT}\n\n⏱ Мы ответим вам как можно скорее."
@@ -463,26 +482,34 @@ def check_expiring_subscriptions():
     while True:
         try:
             now = datetime.now(ZoneInfo("Europe/Moscow"))
+            current_time = now.timestamp() * 1000
 
-            # Запускаем проверку только в 12:00 ± 1 минута
-            if now.hour == 12 and now.minute < 2:
+            # Запускаем проверку только в 12:00 ± 2 минуты (чтобы не пропустить)
+            if now.hour == 12 and now.minute < 3:
                 if os.path.exists("users.json"):
                     with open("users.json", "r", encoding="utf-8") as f:
                         users = json.load(f)
 
-                    current_time = now.timestamp() * 1000
+                    sent_count = 0
+                    print(f"[{now.strftime('%d.%m.%Y %H:%M')}] Запуск ежедневной проверки подписок...")
 
-                    for tg_id_str, data in users.items():
-                        if not tg_id_str.isdigit():
+                    for uid_key, data in users.items():
+                        tg_id_raw = data.get("tg_id")
+                        if not tg_id_raw:
                             continue
-                        tg_id = int(tg_id_str)
+                        try:
+                            tg_id = int(tg_id_raw)
+                        except (ValueError, TypeError):
+                            continue
+
                         expiry = data.get("expiry_time")
                         if not expiry or expiry == 0:  # бессрочные
                             continue
 
                         days_left = (expiry - current_time) / (86400 * 1000)
+                        username = data.get("username", "пользователь")
 
-                        if 2.8 < days_left < 3.2:   # ~за 3 дня
+                        if 2.5 < days_left < 3.5:   # Через ~3 дня
                             try:
                                 bot.send_message(
                                     tg_id,
@@ -490,10 +517,12 @@ def check_expiring_subscriptions():
                                     "Не забудьте продлить, чтобы не потерять доступ.",
                                     parse_mode="HTML"
                                 )
-                            except:
-                                pass
+                                print(f"✅ Уведомление отправлено (3 дня): {username} (TG: {tg_id})")
+                                sent_count += 1
+                            except Exception as e:
+                                print(f"Не удалось отправить (3 дня) {tg_id}: {e}")
 
-                        elif -0.2 < days_left < 0.8:   # в день окончания
+                        elif -0.5 < days_left < 1.0:   # Сегодня или завтра
                             try:
                                 bot.send_message(
                                     tg_id,
@@ -501,8 +530,12 @@ def check_expiring_subscriptions():
                                     "Продлите подписку, чтобы продолжить пользоваться VPN.",
                                     parse_mode="HTML"
                                 )
-                            except:
-                                pass
+                                print(f"✅ Уведомление отправлено (сегодня): {username} (TG: {tg_id})")
+                                sent_count += 1
+                            except Exception as e:
+                                print(f"Не удалось отправить (сегодня) {tg_id}: {e}")
+
+                    print(f"Проверка завершена. Отправлено: {sent_count} уведомлений.")
 
             time.sleep(60)  # проверяем каждую минуту
 
@@ -528,6 +561,7 @@ def main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add("📦 Моя подписка")
     markup.add("🔄 Продлить подписку")
+    markup.add("📑 Инструкция")
     markup.add("📩 Поддержка")
     return markup
 
@@ -602,19 +636,15 @@ def start_handler(message):
     tg_id = message.from_user.id
     loading_msg = bot.send_message(message.chat.id, "⌛", reply_markup=types.ReplyKeyboardRemove())
 
-    if tg_id in blocked_users:
-        return
-
     user_data = None
 
-    if os.path.exists("users.json"):
-        try:
-            with open("users.json", "r", encoding="utf-8") as f:
-                users = json.load(f)
+    try:
+        uid, user_data = get_user_by_tg_id(tg_id)
+    except Exception as e:
+        print(f"Ошибка получения пользователя {tg_id} из users.json")
+        bot.send_message(message.chat.id,
+            f"Ошибка получения данных. Пожалуйста, обратитесь в поддержку: {SUPPORT}")
 
-            user_data = users.get(str(tg_id))
-        except:
-            user_data = None
 
     if user_data and user_data.get("status") == "approved":
         try:
@@ -723,23 +753,8 @@ def successful_payment(message):
             # Уведомление админу
             admin_notify(tg_id, username, base_name, months, payment.total_amount, "Новая подписка")
 
-            # Сообщения пользователю
-            bot.send_message(
-                tg_id,
-                "📋 <b>Инструкция по подключению:</b>\n\n"
-                "1. Скачайте приложение v2raytun\n"
-                "Android: https://play.google.com/store/apps/details?id=com.v2raytun.android\n"
-                "IOS: https://apps.apple.com/kz/app/v2raytun/id6476628951\n"
-                "Windows, MAC, Linux: https://v2raytun.com/\n"
-                "А так же другие клиенты и инструкции к ним можно посмотреть по этой ссылке:\n https://gist.github.com/kksudo/9e2072b3c60a72040f4e9d6fb9da7e9c\n\n"
-                "2. Для Android и IOS следуйте видеоинструкции ниже. На IOS пропускаем часть с маршрутизацией приложений.\n\n"
-                "3. Пользуемся подключениями:\n 🏴‍☠Устройство-1,2,3\nВнешние сервера:\n🇫🇮HELSINKI, 🇸🇪STOKGOLM и тд\nиспользуем только если основное подключение отвалилось!\n\n"
-                "4. Одно устройство - 1 подключение. Что это значит? Например хотим сидеть с ноутбука и с телефона. На ноутбуке выбираем 🏴‍☠Устройство-1, на телефоне 🏴‍☠Устройство-2. СИДЕТЬ С ДВУХ УСТРОЙСТВ НА ОДНОМ ПОДКЛЮЧЕНИИ НЕЛЬЗЯ!\n\n"
-                f"Если будут вопросы — 👤 Напишите сюда: {SUPPORT}\n⏱ Мы ответим вам как можно скорее.",
-                parse_mode="HTML"
-            )
-
-            send_instruction_video(tg_id)
+            # Отправка инструкций
+            instruction_send(tg_id)
 
             bot.send_message(tg_id,
                 "🎉 <b>Подписка успешно активирована!</b>\n\n"
@@ -809,54 +824,64 @@ def send_instruction_video(chat_id):
         print(f"Ошибка отправки видео: {e}")
         bot.send_message(chat_id, "Не удалось отправить видео-инструкцию. Используйте текстовую инструкцию выше.")
 
+# Обработчик отмены оплаты
+@bot.callback_query_handler(func=lambda call: call.data.startswith("cancel:"))
+def handle_cancel(call):
+    tg_id = int(call.data.split(":")[1])
+
+    pending_requests.pop(tg_id, None)
+
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+    bot.send_message(
+        tg_id,
+        "❌ Оплата отменена",
+        reply_markup=main_menu()
+    )
+
+    bot.answer_callback_query(call.id)
+
 
 
 # ====================== Реакции на кнопки меню пользователя  =======================
 
-@bot.message_handler(func=lambda m: m.text and m.text.strip() in [
-    "📦 Моя подписка", "🔄 Продлить подписку", "📩 Поддержка", "↩️ Назад"
-])
-def menu_handler(message):
+
+# ====================== Реакция на кнопку "Моя подписка"  =======================
+@bot.message_handler(func=lambda m: m.text and m.text.strip() == "📦 Моя подписка")
+def subscribe_handler(message):
     tg_id = message.from_user.id
     text = message.text.strip()
+    sub(tg_id, message)
 
-    if tg_id in blocked_users:
-        return
 
-    if text == "↩️ Назад":
-        if tg_id in pending_requests:
-            ask_vpn_offer(message.chat.id)
-            pending_requests.pop(tg_id, None)
-        return
+
+# ====================== Реакция на кнопку "Продлить подписку"  =======================
+@bot.message_handler(func=lambda m: m.text and m.text.strip() == "🔄 Продлить подписку")
+def renew_handler(message):
+    tg_id = message.from_user.id
+    text = message.text.strip()
 
     if tg_id in pending_requests and text != "📩 Поддержка":
         flow = pending_requests[tg_id].get("flow")
 
-        # блокируем только "новую оплату", но не поддержку и не подписку
-        if flow == "new":
-            bot.send_message(message.chat.id, "🕚 Жду подтверждения оплаты")
-            return
-
-    if text == "📦 Моя подписка":
-        sub(tg_id, message)
-    elif text == "🔄 Продлить подписку":
-        pending_requests[tg_id] = {"flow": "renew"}
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(
-            types.InlineKeyboardButton(f"📅 На 1 месяц — {PRICE_PER_MONTH}₽", callback_data="renew:1"),
-            types.InlineKeyboardButton("📅 На несколько месяцев", callback_data="renew:multi")
-        )
-        bot.send_message(
-            message.chat.id,
-            "💰 <b>Цена:</b>\n"
-            f"{PRICE_PER_MONTH}₽ / месяц\n"
-            f"{get_price_per_month(3)}₽ / от трёх месяцев\n"
-            f"{get_price_per_month(8)}₽ / от восьми месяцев\n\n"
-            "🔄 Выберите срок продления:",
-            reply_markup=markup
-        )
-    elif text == "📩 Поддержка":
-        bot.send_message(message.chat.id, support_contact())
+    pending_requests[tg_id] = {"flow": "renew"}
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton(f"📅 На 1 месяц — {PRICE_PER_MONTH}₽", callback_data="renew:1"),
+        types.InlineKeyboardButton("📅 На несколько месяцев", callback_data="renew:multi")
+    )
+    bot.send_message(
+        message.chat.id,
+        "💰 <b>Цена:</b>\n"
+        f"{PRICE_PER_MONTH}₽ / месяц\n"
+        f"{get_price_per_month(3)}₽ / от трёх месяцев\n"
+        f"{get_price_per_month(8)}₽ / от восьми месяцев\n\n"
+        "🔄 Выберите срок продления:",
+        reply_markup=markup
+    )
 
 # Запрос кол-ва месяцев для продления
 @bot.callback_query_handler(func=lambda call: call.data.startswith("renew:"))
@@ -877,25 +902,19 @@ def handle_renew_choice(call):
 
     bot.answer_callback_query(call.id)
 
-# Обработчик отмены оплаты
-@bot.callback_query_handler(func=lambda call: call.data.startswith("cancel:"))
-def handle_cancel(call):
-    tg_id = int(call.data.split(":")[1])
 
-    pending_requests.pop(tg_id, None)
 
-    try:
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-    except:
-        pass
+# ====================== Реакция на кнопку "Инструкция"  =======================
+@bot.message_handler(func=lambda m: m.text and m.text.strip() == "📑 Инструкция")
+def support_handler(message):
+    bot.send_message(message.chat.id, instruction_send(message.chat.id))
 
-    bot.send_message(
-        tg_id,
-        "❌ Оплата отменена",
-        reply_markup=main_menu()
-    )
 
-    bot.answer_callback_query(call.id)
+
+# ====================== Реакция на кнопку "Поддержка"  =======================
+@bot.message_handler(func=lambda m: m.text and m.text.strip() == "📩 Поддержка")
+def support_handler(message):
+    bot.send_message(message.chat.id, support_contact())
 
 
 
