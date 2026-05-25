@@ -21,11 +21,11 @@ config = configparser.ConfigParser()
 config.read(CONFIG_PATH)
 PAYMENTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pay.json')
 
-API_TOKEN = config.get('DEFAULT', 'API').strip('"')
-ADMIN_ID = config.getint('DEFAULT', 'ADMIN_ID')
-SUPPORT = config.get('DEFAULT', 'SUPPORT_LINK').strip('"')
-GRUPP = config.get('DEFAULT', 'GRUPP_LINK').strip('"')
-PRICE_PER_MONTH = config.getint('DEFAULT', 'PRICE_PER_MONTH')
+API_TOKEN = config.get('TG', 'API').strip('"')
+ADMIN_ID = config.getint('TG', 'ADMIN_ID')
+SUPPORT = config.get('TG', 'SUPPORT_LINK').strip('"')
+GRUPP = config.get('TG', 'GRUPP_LINK').strip('"')
+PRICE_PER_MONTH = config.getint('TG', 'PRICE_PER_MONTH')
 
 # === ЮKassa Telegram Payments ===
 PROVIDER_TOKEN = config.get('UKASSA', 'PROVIDER_TOKEN').strip('"')
@@ -36,12 +36,12 @@ if YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY:
     Configuration.configure(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY)
 
 # Настройки X-UI
-XUI_URL = config.get('DEFAULT', 'XUI_URL').strip('"')
-XUI_API_TOKEN = config.get('DEFAULT', 'XUI_API_TOKEN').strip('"')
+XUI_URL = config.get('3XUI', 'XUI_URL').strip('"')
+XUI_API_TOKEN = config.get('3XUI', 'XUI_API_TOKEN').strip('"')
 
-XUI_INBOUND_IDS = [int(x.strip()) for x in config.get('DEFAULT', 'XUI_INBOUND_IDS').split(',')]
-XUI_SUB_LINK = config.get('DEFAULT', 'XUI_SUB_LINK').strip('"')
-XUI_EXPIRY_DAYS = config.getint('DEFAULT', 'XUI_EXPIRY_DAYS', fallback=31)
+XUI_INBOUND_IDS = [int(x.strip()) for x in config.get('3XUI', 'XUI_INBOUND_IDS').split(',')]
+XUI_SUB_LINK = config.get('3XUI', 'XUI_SUB_LINK').strip('"')
+XUI_EXPIRY_DAYS = config.getint('3XUI', 'XUI_EXPIRY_DAYS', fallback=31)
 
 headers = {
     "Authorization": f"Bearer {XUI_API_TOKEN}",
