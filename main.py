@@ -976,6 +976,8 @@ def handle_pay_choice(call):
     if action == "1":
         ask_referral_before_payment(tg_id, username, months=1, flow="new")
     elif action == "multi":
+        # Инициализируем заранее
+        pending_requests[tg_id] = {"flow": "new", "username": username}
         msg = bot.send_message(tg_id, "📅 Введите количество месяцев (1–12):")
         bot.register_next_step_handler(msg, process_months_input, tg_id, flow="new")
 
@@ -1021,13 +1023,24 @@ def process_referral_input(message, tg_id, username, months, flow):
     referrer_uid, referrer_data = find_user_by_referral_code(code)
 
     if not referrer_uid:
-        bot.send_message(tg_id, "❌ Реферальный код не найден. Попробуйте ещё раз или нажмите «Нет».")
+        bot.send_message(tg_id, "❌ Реферальный код не найден.\nПопробуйте ещё раз или нажмите «Нет».")
         bot.register_next_step_handler(message, process_referral_input, tg_id, username, months, flow)
         return
 
-    # Сохраняем реферера во временных данных
+    # Инициализируем запись, если её ещё нет
+    if tg_id not in pending_requests:
+        pending_requests[tg_id] = {
+            "flow": flow,
+            "months": months,
+            "username": username
+        }
+
     pending_requests[tg_id]["referrer_uid"] = referrer_uid
+
+    # Теперь можно отправлять счёт
     send_invoice(tg_id, username, months, flow, code)
+
+    bot.send_message(tg_id, "✅ Реферальный код принят. Переходим к оплате...")
 
 
 # Универсальная обработка успешной оплаты
