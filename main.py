@@ -1939,12 +1939,12 @@ def get_servers_status():
 
             text += (
                 "🌐 <b>CENTRAL SERVER</b>\n"
-                f"{'─' * 18}\n"
+                f"{'─' * 18}\n\n"
                 f"🖥 CPU: <b>{s.get('cpu', 'N/A')}%</b>\n"
                 f"🧠 RAM: <b>{round(s['mem']['current']/1024**3, 2)}</b> / "
                 f"<b>{round(s['mem']['total']/1024**3, 2)} GB</b>\n"
                 f"🔌 TCP: <b>{s.get('tcpCount', 'N/A')}</b>\n"
-                f"⚙️ XRAY: <b>{s['xray'].get('state', 'N/A')}</b>\n"
+                f"⚙️ XRAY: <b>{s['xray'].get('state', 'N/A')}</b>\n\n"
                 f"{'─' * 18}\n\n"
 
             )
@@ -1987,7 +1987,7 @@ def get_servers_status():
                 f"🧠 CPU: <b>{cpu_str}</b>\n"
                 f"💾 MEM: <b>{mem_str}</b>\n"
                 f"📶 Latency: <b>{node.get('latencyMs', 'N/A')} ms</b>\n"
-                f"⏱ Uptime: <b>{uptime_days} days</b>\n"
+                f"⏱ Uptime: <b>{uptime_days} days</b>\n\n"
                 f"{'─' * 18}\n\n"
             )
 
