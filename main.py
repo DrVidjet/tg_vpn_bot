@@ -1161,6 +1161,8 @@ def handle_cancel(call):
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "📦 Моя подписка")
 def subscribe_handler(message):
     tg_id = message.from_user.id
+    username = (message.from_user.username or "no_username").lower().replace("@", "")
+
     # 2. Ищем по username (пользователь добавлен админом)
     if username and username != "no_username":
         uid_by_name, user_by_name = get_user_by_username(username)
@@ -1178,6 +1180,7 @@ def subscribe_handler(message):
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "🎟 Рефералка")
 def referral_handler(message):
     tg_id = message.from_user.id
+    username = (message.from_user.username or "no_username").lower().replace("@", "")
 
     # 2. Ищем по username (пользователь добавлен админом)
     if username and username != "no_username":
@@ -1266,6 +1269,15 @@ def invite_friend(call):
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "🔄 Продлить подписку")
 def renew_handler(message):
     tg_id = message.from_user.id
+    username = (message.from_user.username or "no_username").lower().replace("@", "")
+
+    # 2. Ищем по username (пользователь добавлен админом)
+    if username and username != "no_username":
+        uid_by_name, user_by_name = get_user_by_username(username)
+        if user_by_name and user_by_name.get("status") == "approved" and user_by_name.get("tg_id") == "by_admin":
+
+            # Обновляем tgId
+            update_tg_id(uid_by_name, tg_id, username)
 
     # Получаем данные пользователя
     uid, user_data = get_user_by_tg_id(tg_id)
@@ -1327,14 +1339,36 @@ def handle_renew_choice(call):
 # ====================== Реакция на кнопку "Инструкция"  =======================
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "📑 Инструкция")
 def instruction_handler(message):
-    instruction_send(message.chat.id)
+    tg_id = message.from_user.id
+    username = (message.from_user.username or "no_username").lower().replace("@", "")
+
+    # 2. Ищем по username (пользователь добавлен админом)
+    if username and username != "no_username":
+        uid_by_name, user_by_name = get_user_by_username(username)
+        if user_by_name and user_by_name.get("status") == "approved" and user_by_name.get("tg_id") == "by_admin":
+
+            # Обновляем tgId
+            update_tg_id(uid_by_name, tg_id, username)
+
+    instruction_send(tg_id)
 
 
 
 # ====================== Реакция на кнопку "Поддержка"  =======================
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "📩 Поддержка")
 def support_handler(message):
-    bot.send_message(message.chat.id, f"📩 Поддержка\n👤 Напишите сюда: {SUPPORT}\n\n⏱ Мы ответим вам как можно скорее.", reply_markup=main_menu())
+    tg_id = message.from_user.id
+    username = (message.from_user.username or "no_username").lower().replace("@", "")
+
+    # 2. Ищем по username (пользователь добавлен админом)
+    if username and username != "no_username":
+        uid_by_name, user_by_name = get_user_by_username(username)
+        if user_by_name and user_by_name.get("status") == "approved" and user_by_name.get("tg_id") == "by_admin":
+
+            # Обновляем tgId
+            update_tg_id(uid_by_name, tg_id, username)
+
+    bot.send_message(tg_id, f"📩 Поддержка\n👤 Напишите сюда: {SUPPORT}\n\n⏱ Мы ответим вам как можно скорее.", reply_markup=main_menu())
 
 
 
