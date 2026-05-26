@@ -1250,7 +1250,7 @@ def invite_friend(call):
         "• Обход блокировок и белых списков\n"
         "• 3 устройства на одной подписке\n"
         "• Хорошие цены и реферальная система\n\n"
-        f"Мой реферальный код: `{code}`\n\n"
+        f"Мой реферальный код: {code}\n\n"
         "При регистрации и оплате по коду — получишь +1 месяц в подарок! 🎁"
     )
 
@@ -1259,7 +1259,7 @@ def invite_friend(call):
     markup.add(
         types.InlineKeyboardButton(
             "🔗 Поделиться с друзьями",
-            switch_inline_query=invite_text  # Это позволяет быстро поделиться
+            switch_inline_query=invite_text
         )
     )
 
