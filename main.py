@@ -17,6 +17,8 @@ import threading
 import base64
 from flask import Flask, request, jsonify
 import traceback
+import random
+import string
 
 # ====================== КОНФИГУРАЦИЯ ======================
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'API.conf')
@@ -298,7 +300,7 @@ def get_or_create_uid(tg_id=None):
 
 
 # Сохранение нового пользователя в файл
-def save_user(uid, tg_id, email=None, username=None, status="approved", expiry_time=None, sub_id=None):
+def save_user(uid, tg_id, email=None, username=None, status="approved", expiry_time=None, sub_id=None, referral_code=None):
     if os.path.exists("users.json"):
         with open("users.json", "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -320,22 +322,31 @@ def save_user(uid, tg_id, email=None, username=None, status="approved", expiry_t
             current["expiry_time"] = expiry_time
         if sub_id:
             current["sub_id"] = sub_id
+        if referral_code:
+            current["referral_code"] = referral_code
 
     else:
         # Новый пользователь
         if expiry_time is None:
             expiry_time = int((datetime.now() + timedelta(days=XUI_EXPIRY_DAYS)).timestamp() * 1000)
+
+        if not referral_code:
+            referral_code = generate_referral_code()
+
         data[key] = {
             "tg_id": tg_id or "by_admin",
             "email": email,
             "username": username or "no_username",
             "status": status,
             "expiry_time": expiry_time,
-            "sub_id": sub_id
+            "sub_id": sub_id,
+            "referral_code": referral_code
         }
 
     with open("users.json", "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
+
+    return referral_code
 
 
 
@@ -406,12 +417,9 @@ def load_users():
 
     max_uid = 0
     for key, info in data.items():
-        status = info.get("status")
-        tg_id = info.get("tg_id")
-
-        # Обычный пользователь (ключ = uid)
         if key.isdigit():
             uid = int(key)
+            tg_id = info.get("tg_id")
             if tg_id is not None:
                 user_ids[tg_id] = uid
             if uid > max_uid:
@@ -637,6 +645,7 @@ def months_word(months: int) -> str:
 def main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add("📦 Моя подписка")
+    markup.add("🎟 Рефералка")
     markup.add("🔄 Продлить подписку")
     markup.add("📑 Инструкция")
     markup.add("📩 Поддержка")
@@ -663,7 +672,7 @@ def admin_panel():
 # ====================== Деньги =======================
 
 # Отправка платежа через YooKassa
-def send_invoice(tg_id: int, username: str, months: int = 1, flow: str = "new"):
+def send_invoice(tg_id: int, username: str, months: int = 1, flow: str = "new", referral_code: str = None):
     price_per_month = get_price_per_month(months)
     amount = price_per_month * months
 
@@ -671,7 +680,8 @@ def send_invoice(tg_id: int, username: str, months: int = 1, flow: str = "new"):
         "flow": flow,
         "months": months,
         "amount": amount,
-        "username": username
+        "username": username,
+        "referral_code": referral_code
     }
 
     description = f"VidjetVPN — {months} {months_word(months)}"
@@ -755,6 +765,91 @@ def get_price_per_month(months: int) -> int:
         return 125
     else:
         return PRICE_PER_MONTH  # базовая цена из конфига
+
+
+
+# ====================== РЕФЕРАЛЬНАЯ СИСТЕМА ======================
+
+# Генерирует уникальный реферальный код (8 символов: цифры + заглавные буквы)
+def generate_referral_code(length=8):
+
+    chars = string.ascii_uppercase + string.digits
+    while True:
+        code = ''.join(random.choice(chars) for _ in range(length))
+        if not is_referral_code_exists(code):
+            return code
+
+def is_referral_code_exists(code: str) -> bool:
+    if not os.path.exists("users.json"):
+        return False
+    with open("users.json", "r", encoding="utf-8") as f:
+        users = json.load(f)
+    return any(user.get("referral_code") == code for user in users.values())
+
+# Поиск пользователя по реферальному коду
+def find_user_by_referral_code(code: str):
+    if not os.path.exists("users.json"):
+        return None, None
+    with open("users.json", "r", encoding="utf-8") as f:
+        users = json.load(f)
+    for uid, data in users.items():
+        if data.get("referral_code") == code.upper():
+            return uid, data
+    return None, None
+
+# Реферальный бонус
+def give_referral_bonus(referrer_uid: str, new_user_uid: str, months: int = 1):
+    try:
+        with open("users.json", "r", encoding="utf-8") as f:
+            users = json.load(f)
+
+        if referrer_uid and referrer_uid in users:
+            referrer = users[referrer_uid]
+
+            # Проверка: не даём бонус бессрочным пользователям
+            if referrer.get("expiry_time") == 0:
+                print(f"ℹ️ Реферер UID {referrer_uid} имеет бессрочную подписку — бонус не выдан")
+                return
+
+            current_expiry = referrer.get("expiry_time", 0)
+            now_ms = int(datetime.now().timestamp() * 1000)
+            base_time = current_expiry if current_expiry > now_ms else now_ms
+            bonus_ms = XUI_EXPIRY_DAYS * months * 24 * 60 * 60 * 1000
+            new_expiry = base_time + bonus_ms
+
+            referrer["expiry_time"] = new_expiry
+
+            # Обновляем в 3x-ui
+            email = referrer.get("email")
+            if email:
+                try:
+                    r = requests.get(f"{XUI_URL}/panel/api/clients/get/{email}", headers=headers, timeout=10)
+                    if r.json().get("success"):
+                        client = r.json()["obj"]["client"]
+                        if "id" in client and isinstance(client["id"], (int, float)):
+                            client["id"] = str(client["id"])
+                        client["expiryTime"] = new_expiry
+                        requests.post(f"{XUI_URL}/panel/api/clients/update/{email}", headers=headers, json=client, timeout=10)
+                except:
+                    pass
+
+            with open("users.json", "w", encoding="utf-8") as f:
+                json.dump(users, f, ensure_ascii=False, indent=4)
+
+            # Уведомляем реферера
+            tg_id = referrer.get("tg_id")
+            if tg_id and tg_id != "by_admin":
+                try:
+                    bot.send_message(int(tg_id),
+                        "🎉 <b>Реферальный бонус!</b>\n\n"
+                        f"Ваш друг активировал подписку по вашей рефералке.\n"
+                        f"Вам добавлен +1 месяц к подписке!",
+                        parse_mode="HTML")
+                except:
+                    pass
+
+    except Exception as e:
+        print(f"Ошибка выдачи реферального бонуса: {e}")
 
 
 
@@ -876,18 +971,67 @@ def handle_pay_choice(call):
         pass
 
     if action == "1":
-        send_invoice(tg_id, username, months=1, flow="new")
+        ask_referral_before_payment(tg_id, username, months=1, flow="new")
     elif action == "multi":
         msg = bot.send_message(tg_id, "📅 Введите количество месяцев (1–12):")
         bot.register_next_step_handler(msg, process_months_input, tg_id, flow="new")
 
     bot.answer_callback_query(call.id)
 
+# Запрос рефералки
+def ask_referral_before_payment(tg_id, username, months, flow):
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("✅ Есть рефералка", callback_data=f"has_ref:{months}:{flow}"),
+        types.InlineKeyboardButton("❌ Нет", callback_data=f"no_ref:{months}:{flow}")
+    )
+    bot.send_message(
+        tg_id,
+        "🎟 У вас есть реферальный код?",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith(("has_ref:", "no_ref:")))
+def handle_referral_choice(call):
+    tg_id = call.from_user.id
+    data = call.data.split(":")
+    has_ref = data[0] == "has_ref"
+    months = int(data[1])
+    flow = data[2]
+    username = (call.from_user.username or "no_username").lower().replace("@", "")
+
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+    if has_ref:
+        msg = bot.send_message(tg_id, "Введите реферальный код:")
+        bot.register_next_step_handler(msg, process_referral_input, tg_id, username, months, flow)
+    else:
+        send_invoice(tg_id, username, months, flow, referral_code=None)
+
+    bot.answer_callback_query(call.id)
+
+def process_referral_input(message, tg_id, username, months, flow):
+    code = message.text.strip().upper()
+    referrer_uid, referrer_data = find_user_by_referral_code(code)
+
+    if not referrer_uid:
+        bot.send_message(tg_id, "❌ Реферальный код не найден. Попробуйте ещё раз или нажмите «Нет».")
+        bot.register_next_step_handler(message, process_referral_input, tg_id, username, months, flow)
+        return
+
+    # Сохраняем реферера во временных данных
+    pending_requests[tg_id]["referrer_uid"] = referrer_uid
+    send_invoice(tg_id, username, months, flow, code)
+
 
 # Универсальная обработка успешной оплаты
 def process_successful_payment(tg_id: int, months: int, flow: str = "new"):
     data = pending_requests.get(tg_id, {})
     username = data.get("username", "no_username")
+    referrer_uid = data.get("referrer_uid")
     amount = data.get("amount", 0) * 100
 
     uid = get_or_create_uid(tg_id)
@@ -897,7 +1041,12 @@ def process_successful_payment(tg_id: int, months: int, flow: str = "new"):
     if flow == "new":
         success, error_msg, base_name, expiry_ms, sub_id = create_vpn_client(uid, tg_id, username, months)
         if success:
-            save_user(uid, tg_id, base_name, username, "approved", expiry_ms, sub_id)
+            ref_code = save_user(uid, tg_id, base_name, username, "approved", expiry_ms, sub_id)
+
+            # Бонус за рефералку
+            if referrer_uid:
+                give_referral_bonus(referrer_uid, str(uid), months=1)
+
             sub_link = f"{XUI_SUB_LINK}/{sub_id}"
 
             admin_notify(tg_id, username, base_name, months, amount, "Новая подписка")
@@ -908,6 +1057,9 @@ def process_successful_payment(tg_id: int, months: int, flow: str = "new"):
                 f"🔗 <b>Ваша ссылка на подписку:</b>\n"
                 f"<code>{sub_link}</code>\n"
                 "Переходить по ссылке не нужно, ее необходимо скопировать и вставить в приложение.\n\n"
+                f"🎟 Ваш реферальный код:\n"
+                f"<code>{ref_code}</code>\n"
+                f"<b>Зовите друзей, получайте по месяцу с каждого!</b>\n\n"
                 "🎉 Добро пожаловать в VidjetVPN!\n\n"
                 "👇 Подписывайтесь на группу, чтобы быть в курсе новостей:\n"
                 f"🏴‍☠{GRUPP}",
@@ -988,6 +1140,84 @@ def handle_cancel(call):
 def subscribe_handler(message):
     tg_id = message.from_user.id
     sub(tg_id, message)
+
+
+
+# ====================== Реакция на кнопку "Рефералка"  =======================
+@bot.message_handler(func=lambda m: m.text and m.text.strip() == "🎟 Рефералка")
+def referral_handler(message):
+    show_referral(message.chat.id)
+
+def show_referral(tg_id):
+    uid, user_data = get_user_by_tg_id(tg_id)
+    if not user_data or not user_data.get("referral_code"):
+        bot.send_message(tg_id, "❌ Реферальный код не найден.", reply_markup=main_menu())
+        return
+
+    if user_data.get("expiry_time") == 0:   # Бессрочный
+        bot.send_message(
+            tg_id,
+            "♾ <b>Бессрочным пользователям реферальная система недоступна.</b>\n\n"
+            "Вы уже имеете максимальный статус подписки.",
+            parse_mode="HTML",
+            reply_markup=main_menu()
+        )
+        return
+
+    code = user_data["referral_code"]
+
+    invite_text = (
+        "🔥 Присоединяйся к VidjetVPN!\n\n"
+        "• Стабильный и быстрый VPN\n"
+        "• Обход блокировок и белых списков\n"
+        "• 3 устройства на одной подписке\n"
+        "• Хорошие цены и реферальная система\n\n"
+        f"Мой реферальный код: <b>{code}</b>\n\n"
+        "При регистрации и оплате по коду — получишь +1 месяц в подарок! 🎁"
+    )
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("👥 Пригласить друга", switch_inline_query=invite_text))
+
+    bot.send_message(
+        tg_id,
+        f"🎟 <b>Ваш реферальный код:</b>\n\n"
+        f"<code>{code}</code>\n\n"
+        "Приведи друга — оба получите +1 месяц бесплатно!\n\n"
+        "Поделись кодом с друзьями.",
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "invite_friend")
+def invite_friend(call):
+    tg_id = call.from_user.id
+    uid, user_data = get_user_by_tg_id(tg_id)
+
+    if not user_data or not user_data.get("referral_code"):
+            bot.answer_callback_query(call.id, "Реферальный код не найден")
+            return
+
+    code = user_data["referral_code"]
+
+    invite_text = (
+        "🔥 Присоединяйся к VidjetVPN!\n\n"
+        "• Стабильный и быстрый VPN\n"
+        "• Обход блокировок и белых списков\n"
+        "• 3 устройства на одной подписке\n"
+        "• Хорошие цены и реферальная система\n\n"
+        f"Мой реферальный код: <b>{code}</b>\n\n"
+        "При регистрации и оплате по коду — получишь +1 месяц в подарок! 🎁"
+    )
+
+    # Кнопка "Поделиться"
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton(
+            "🔗 Поделиться с друзьями",
+            switch_inline_query=invite_text  # Это позволяет быстро поделиться
+        )
+    )
 
 
 
@@ -1158,6 +1388,7 @@ def show_users_list(message, filter_type="all"):
         status = info.get("status", "unknown")
         expiry = info.get("expiry_time", 0)
         sub_id = info.get("sub_id", "-")
+        ref_code = info.get("referral_code", "—")
 
         # Фильтрация
         if filter_type == "limited" and expiry == 0:
@@ -1187,6 +1418,7 @@ def show_users_list(message, filter_type="all"):
             f"TG_ID: {tg_id}\n"
             f"USER: @{username}\n"
             f"EMAIL: <code>{email}</code>\n"
+            f"🔑 <b>Ref код:</b> <code>{ref_code}</code>\n"
             f"STATUS: {status}\n"
             f"ONLINE: {'🟢' if online else '🔴'}\n"
             f"UP: {up} GB | DOWN: {down} GB\n"
@@ -1360,7 +1592,7 @@ def admin_add_user(message, months):
     success, error_msg, email, expiry_ms, sub_id = create_vpn_client(uid, tg_id, admin_given_email, months)
 
     if success:
-        save_user(uid, tg_id, email, admin_given_username, "approved", expiry_ms, sub_id)
+        ref_code = save_user(uid, tg_id, email, admin_given_username, "approved", expiry_ms, sub_id, referral_code=None)
 
         moscow_tz = ZoneInfo("Europe/Moscow")
         expiry_date = "БЕССРОЧНО" if expiry_ms == 0 else datetime.fromtimestamp(
@@ -1378,6 +1610,7 @@ def admin_add_user(message, months):
             f"👤 Username: @{username_display}\n"
             f"📧 Email: <code>{email}</code>\n"
             f"📅 <b>Действует до:</b> {expiry_date}\n\n"
+            f"🎟 <b>Реф код:</b> <code>{ref_code}</code>\n\n"
             f"🔗 Ссылка:\n<code>{sub_link}</code>",
             parse_mode="HTML",
             reply_markup=admin_panel()
