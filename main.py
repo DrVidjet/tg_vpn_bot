@@ -1923,7 +1923,8 @@ def servers_status(message):
         return
     bot.send_message(
         message.chat.id,
-        get_servers_status()
+        get_servers_status(),
+        parse_mode="HTML"
     )
 
 # Получение статуса серверов
