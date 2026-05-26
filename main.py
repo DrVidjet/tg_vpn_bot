@@ -1202,7 +1202,7 @@ def show_referral(tg_id):
         bot.send_message(
             tg_id,
             "♾ <b>Бессрочным пользователям реферальная система недоступна.</b>\n\n"
-            "Вы уже имеете максимальный статус подписки.",
+            "Вы уже имеете максимальный статус подписки🎉🎉🎉",
             parse_mode="HTML",
             reply_markup=main_menu()
         )
@@ -1211,17 +1211,17 @@ def show_referral(tg_id):
     code = user_data["referral_code"]
 
     invite_text = (
-        "🔥 Присоединяйся к VidjetVPN!\n\n"
+        "\n🔥 Присоединяйся к 🏴‍☠️VidjetVPN🏴‍☠️\n\n"
         "• Стабильный и быстрый VPN\n"
         "• Обход блокировок и белых списков\n"
         "• 3 устройства на одной подписке\n"
         "• Хорошие цены и реферальная система\n\n"
-        f"Мой реферальный код: <b>{code}</b>\n\n"
+        f"Мой реферальный код: <code>{code}</code>\n\n"
         "При регистрации и оплате по коду — получишь +1 месяц в подарок! 🎁"
     )
 
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("👥 Пригласить друга", switch_inline_query=invite_text))
+    markup.add(types.InlineKeyboardButton("👥 Пригласить друга", switch_inline_query=invite_text, parse_mode="HTML"))
 
     bot.send_message(
         tg_id,
