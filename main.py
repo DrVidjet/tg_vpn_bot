@@ -666,7 +666,6 @@ def admin_panel():
     markup.add("🗑 Удалить пользователя")
     markup.add("📊 Отчет по оплатам")
     markup.add("🖥 Статус серверов")
-    markup.add("🔄 Синхронизировать пользователей")
 
     return markup
 
@@ -1972,56 +1971,6 @@ def get_servers_status():
         text += f"NODES ERROR: {e}\n"
 
     return text
-
-
-
-# ============== Реация на кнопку"Синхронизация пользователей" ================
-@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "🔄 Синхронизировать пользователей")
-def sync_inbounds_handler(message):
-    if not is_admin(message.from_user.id):
-        return
-
-    bot.send_message(message.chat.id, "🔄 Запущена синхронизация пользователей...")
-
-    count_updated = 0
-    try:
-        with open("users.json", "r", encoding="utf-8") as f:
-            users = json.load(f)
-
-        for uid, user_data in users.items():
-            email = user_data.get("email")
-            if not email:
-                continue
-
-            # Получаем текущего клиента
-            r = requests.get(f"{XUI_URL}/panel/api/clients/get/{email}", headers=headers, timeout=10)
-            if not r.json().get("success"):
-                continue
-
-            attach_payload = {"inboundIds": XUI_INBOUND_IDS}
-
-            update_r = requests.post(
-                f"{XUI_URL}/panel/api/clients/{email}/attach",
-                headers=headers,
-                json=attach_payload,
-                timeout=15
-            )
-
-            if update_r.json().get("success"):
-                count_updated += 1
-                print(f"✅ Синхронизирован клиент {email}")
-            else:
-                print(f"❌ Не удалось обновить {email}")
-
-        bot.send_message(
-            message.chat.id,
-            f"✅ Синхронизация завершена!\n\nОбновлено клиентов: {count_updated}",
-            reply_markup=admin_panel()
-        )
-
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Ошибка синхронизации: {e}")
-        print(f"Sync error: {e}")
 
 
 
