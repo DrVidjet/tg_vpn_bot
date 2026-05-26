@@ -1495,8 +1495,7 @@ def show_users_list(message, filter_type="all"):
 
             f"🔑 <b>Ref код:</b> <code>{ref_code}</code>\n\n"
 
-            f"📊 <b>Статус:</b> {status}\n"
-            f"{'🟢 Онлайн' if online else '🔴 Офлайн'}\n\n"
+            f"📊 <b>Статус:</b> {'🟢 Онлайн' if online else '🔴 Офлайн'}\n\n"
 
             f"⬆️ <b>Upload:</b> {up} GB\n"
             f"⬇️ <b>Download:</b> {down} GB\n\n"
