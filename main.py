@@ -1147,6 +1147,7 @@ def show_users_list(message, filter_type="all"):
 
     result = f"👥 Пользователи — {filter_type.upper()}\n\n{'─' * 18}\n\n"
     count = 0
+    current = ""
 
     for key, info in users.items():
         uid = key
@@ -1194,7 +1195,7 @@ def show_users_list(message, filter_type="all"):
         )
 
         if len(current) + len(user_block) > 4000:
-            messages.append(current)
+            result.append(current)
             current = ""
 
         current += user_block
