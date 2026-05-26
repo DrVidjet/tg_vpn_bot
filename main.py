@@ -1221,7 +1221,7 @@ def show_referral(tg_id):
     )
 
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("👥 Пригласить друга", switch_inline_query=invite_text, parse_mode="HTML"))
+    markup.add(types.InlineKeyboardButton("👥 Пригласить друга", switch_inline_query=invite_text))
 
     bot.send_message(
         tg_id,
@@ -1250,7 +1250,7 @@ def invite_friend(call):
         "• Обход блокировок и белых списков\n"
         "• 3 устройства на одной подписке\n"
         "• Хорошие цены и реферальная система\n\n"
-        f"Мой реферальный код: <b>{code}</b>\n\n"
+        f"Мой реферальный код: `{code}`\n\n"
         "При регистрации и оплате по коду — получишь +1 месяц в подарок! 🎁"
     )
 
