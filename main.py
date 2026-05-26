@@ -1180,7 +1180,7 @@ def show_users_list(message, filter_type="all"):
         up = round(traffic_data.get("up", 0) / (1024**3), 2)
         down = round(traffic_data.get("down", 0) / (1024**3), 2)
 
-        result += (
+        user_block = (
             f"UID: <b>{uid}</b>\n"
             f"TG_ID: {tg_id}\n"
             f"USER: @{username}\n"
@@ -1192,14 +1192,22 @@ def show_users_list(message, filter_type="all"):
             f"SUB: <code>{XUI_SUB_LINK}/{sub_id}</code>\n\n"
             f"{'─' * 18}\n\n"
         )
-        count += 1
 
-    if count == 0:
-        result += "Пользователей по данному фильтру не найдено."
+        if len(current) + len(user_block) > 4000:
+            messages.append(current)
+            current = ""
 
-    # Отправляем частями
-    for i in range(0, len(result), 4000):
-        bot.send_message(message.chat.id, result[i:i+4000], parse_mode="HTML")
+        current += user_block
+
+    if current:
+        messages.append(current)
+
+    for msg in messages:
+        bot.send_message(
+            message.chat.id,
+            msg,
+            parse_mode="HTML"
+        )
 
 
 
