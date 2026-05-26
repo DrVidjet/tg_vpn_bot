@@ -1488,16 +1488,24 @@ def show_users_list(message, filter_type="all"):
         down = round(traffic_data.get("down", 0) / (1024**3), 2)
 
         user_block = (
-            f"UID: <b>{uid}</b>\n"
-            f"TG_ID: {tg_id}\n"
-            f"USER: @{username}\n"
-            f"EMAIL: <code>{email}</code>\n"
-            f"🔑 <b>Ref код:</b> <code>{ref_code}</code>\n"
-            f"STATUS: {status}\n"
-            f"ONLINE: {'🟢' if online else '🔴'}\n"
-            f"UP: {up} GB | DOWN: {down} GB\n"
-            f"EXPIRE: {expiry_date}\n\n"
-            f"SUB: <code>{XUI_SUB_LINK}/{sub_id}</code>\n\n"
+            f"🆔 <b>UID:</b> <code>{uid}</code>\n"
+            f"👤 <b>TG ID:</b> <code>{tg_id}</code>\n"
+            f"💬 <b>User:</b> @{username}\n"
+            f"📧 <b>Email:</b> <code>{email}</code>\n\n"
+
+            f"🔑 <b>Ref код:</b> <code>{ref_code}</code>\n\n"
+
+            f"📊 <b>Статус:</b> {status}\n"
+            f"{'🟢 Онлайн' if online else '🔴 Офлайн'}\n\n"
+
+            f"⬆️ <b>Upload:</b> {up} GB\n"
+            f"⬇️ <b>Download:</b> {down} GB\n\n"
+
+            f"⏳ <b>Expire:</b> {expiry_date}\n\n"
+
+            f"🔗 <b>SUB LINK:</b>\n"
+            f"<code>{XUI_SUB_LINK}/{sub_id}</code>\n\n"
+
             f"{'─' * 18}\n\n"
         )
 
