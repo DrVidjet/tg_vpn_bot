@@ -1211,7 +1211,7 @@ def show_referral(tg_id):
     code = user_data["referral_code"]
 
     invite_text = (
-        "\n🔥 Присоединяйся к 🏴‍☠️VidjetVPN🏴‍☠️\n\n"
+        "\n\n🔥 Присоединяйся к\n\n  🏴‍☠️VidjetVPN🏴‍☠️\n\n"
         "• Стабильный и быстрый VPN\n"
         "• Обход блокировок и белых списков\n"
         "• 3 устройства на одной подписке\n"
