@@ -1216,7 +1216,8 @@ def show_referral(tg_id):
         "• Обход блокировок и белых списков\n"
         "• 3 устройства на одной подписке\n"
         "• Хорошие цены и реферальная система\n\n"
-        f"Мой реферальный код: <code>{code}</code>\n\n"
+        f"Мой реферальный код:\n\n"
+        f"{code}\n\n"
         "При регистрации и оплате по коду — получишь +1 месяц в подарок! 🎁"
     )
 
@@ -1231,38 +1232,6 @@ def show_referral(tg_id):
         "Поделитесь кодом с друзьями:",
         parse_mode="HTML",
         reply_markup=markup
-    )
-
-@bot.callback_query_handler(func=lambda call: call.data == "invite_friend")
-def invite_friend(call):
-    tg_id = call.from_user.id
-    uid, user_data = get_user_by_tg_id(tg_id)
-
-    if not user_data or not user_data.get("referral_code"):
-            bot.answer_callback_query(call.id, "Реферальный код не найден")
-            return
-
-    code = user_data["referral_code"]
-
-    clean = re.sub(r"<code>.*?</code>", "", code, flags=re.DOTALL)
-
-    invite_text = (
-        "🔥 Присоединяйся к VidjetVPN!\n\n"
-        "• Стабильный и быстрый VPN\n"
-        "• Обход блокировок и белых списков\n"
-        "• 3 устройства на одной подписке\n"
-        "• Хорошие цены и реферальная система\n\n"
-        f"Мой реферальный код: {clean}\n\n"
-        "При регистрации и оплате по коду — получишь +1 месяц в подарок! 🎁"
-    )
-
-    # Кнопка "Поделиться"
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(
-        types.InlineKeyboardButton(
-            "🔗 Поделиться с друзьями",
-            switch_inline_query=invite_text
-        )
     )
 
 
