@@ -1935,26 +1935,35 @@ def get_servers_status():
         r = requests.get(f"{XUI_URL}/panel/api/server/status", headers=headers, timeout=15)
         if r.status_code == 200 and r.json().get("success"):
             s = r.json()["obj"]
+
             text += (
-                "🌐 CENTRAL\n"
-                f"CPU: {s.get('cpu', 'N/A')}%\n"
-                f"RAM: {round(s['mem']['current']/1024**3, 2)} / "
-                f"{round(s['mem']['total']/1024**3, 2)} GB\n"
-                f"TCP: {s.get('tcpCount', 'N/A')}\n"
-                f"XRAY: {s['xray'].get('state', 'N/A')}\n\n"
+                "🌐 <b>CENTRAL SERVER</b>\n"
+                "──────────────────\n"
+                f"🖥 CPU: <b>{s.get('cpu', 'N/A')}%</b>\n"
+                f"🧠 RAM: <b>{round(s['mem']['current']/1024**3, 2)}</b> / "
+                f"<b>{round(s['mem']['total']/1024**3, 2)} GB</b>\n"
+                f"🔌 TCP: <b>{s.get('tcpCount', 'N/A')}</b>\n"
+                f"⚙️ XRAY: <b>{s['xray'].get('state', 'N/A')}</b>\n\n"
             )
     except Exception as e:
-        text += f"CENTRAL ERROR: {e}\n\n"
+        text += (
+            "🌐 <b>CENTRAL SERVER</b>\n"
+            "──────────────────\n"
+            f"❌ <b>Error:</b> <code>{e}</code>\n\n"
+        )
 
     # ==================== NODES ====================
     try:
         r = requests.get(f"{XUI_URL}/panel/api/nodes/list", headers=headers, timeout=15)
+
         if r.status_code != 200 or not r.json().get("success"):
-            text += "❌ Не удалось получить список нод\n"
+            text += "🖥 <b>NODES</b>\n❌ Не удалось получить список нод\n"
             return text
 
         nodes = r.json()["obj"]
-        text += "🖥 NODES\n\n"
+
+        text += "🖥 <b>NODES STATUS</b>\n"
+        text += "──────────────────\n\n"
 
         for node in nodes:
             name = node.get("name", "Unknown")
@@ -1966,16 +1975,19 @@ def get_servers_status():
             cpu_str = f"{round(cpu_pct, 1)}%" if isinstance(cpu_pct, (int, float)) else "N/A"
             mem_str = f"{round(mem_pct, 1)}%" if isinstance(mem_pct, (int, float)) else "N/A"
 
+            uptime_days = (node.get("uptimeSecs", 0) // 86400)
+
             text += (
-                f"🖥 {name}\n"
-                f"STATUS: {'🟢' if status == 'online' else '🔴'}\n"
-                f"CPU: {cpu_str}\n"
-                f"MEM: {mem_str}\n"
-                f"Latency: {node.get('latencyMs', 'N/A')} ms\n"
-                f"Uptime: {node.get('uptimeSecs', 0) // 86400} дней\n\n"
+                f"🖥 <b>{name}</b>\n"
+                f"{'🟢 Online' if status == 'online' else '🔴 Offline'}\n"
+                f"🧠 CPU: <b>{cpu_str}</b>\n"
+                f"💾 MEM: <b>{mem_str}</b>\n"
+                f"📶 Latency: <b>{node.get('latencyMs', 'N/A')} ms</b>\n"
+                f"⏱ Uptime: <b>{uptime_days} days</b>\n\n"
             )
+
     except Exception as e:
-        text += f"NODES ERROR: {e}\n"
+        text += f"🖥 <b>NODES ERROR:</b> <code>{e}</code>\n"
 
     return text
 
