@@ -19,6 +19,7 @@ from flask import Flask, request, jsonify
 import traceback
 import random
 import string
+import re
 
 # ====================== КОНФИГУРАЦИЯ ======================
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'API.conf')
@@ -1243,13 +1244,15 @@ def invite_friend(call):
 
     code = user_data["referral_code"]
 
+    clean = re.sub(r"<code>.*?</code>", "", code, flags=re.DOTALL)
+
     invite_text = (
         "🔥 Присоединяйся к VidjetVPN!\n\n"
         "• Стабильный и быстрый VPN\n"
         "• Обход блокировок и белых списков\n"
         "• 3 устройства на одной подписке\n"
         "• Хорошие цены и реферальная система\n\n"
-        f"Мой реферальный код: {code}\n\n"
+        f"Мой реферальный код: {clean}\n\n"
         "При регистрации и оплате по коду — получишь +1 месяц в подарок! 🎁"
     )
 
