@@ -684,7 +684,8 @@ def send_invoice(tg_id: int, username: str, months: int = 1, flow: str = "new", 
         "months": months,
         "amount": amount,
         "username": username,
-        "referral_code": referral_code
+        "referral_code": referral_code,
+        "referrer_uid": pending_requests.get(tg_id, {}).get("referrer_uid")
     }
 
     description = f"VidjetVPN — {months} {months_word(months)}"
@@ -705,7 +706,8 @@ def send_invoice(tg_id: int, username: str, months: int = 1, flow: str = "new", 
             "tg_id": str(tg_id),
             "months": str(months),
             "flow": flow,
-            "username": username
+            "username": username,
+            "referrer_uid": pending_requests.get(tg_id, {}).get("referrer_uid")
         }
     }
 
@@ -1044,10 +1046,9 @@ def process_referral_input(message, tg_id, username, months, flow):
 
 
 # Универсальная обработка успешной оплаты
-def process_successful_payment(tg_id: int, months: int, flow: str = "new"):
+def process_successful_payment(tg_id: int, months: int, flow: str = "new", referrer_uid: str = None):
     data = pending_requests.get(tg_id, {})
     username = data.get("username", "no_username")
-    referrer_uid = data.get("referrer_uid")
     amount = data.get("amount", 0) * 100
 
     uid = get_or_create_uid(tg_id)
@@ -1058,8 +1059,8 @@ def process_successful_payment(tg_id: int, months: int, flow: str = "new"):
         final_months = months
         if referrer_uid:
             final_months += 1
-            print(f"✅ Реферальный бонус: +1 месяц новому пользователю (итого {final_months} месяцев)")
-        success, error_msg, base_name, expiry_ms, sub_id = create_vpn_client(uid, tg_id, username, months)
+
+        success, error_msg, base_name, expiry_ms, sub_id = create_vpn_client(uid, tg_id, username, final_months)
 
         if success:
             ref_code = save_user(uid, tg_id, base_name, username, "approved", expiry_ms, sub_id)
@@ -2066,8 +2067,10 @@ def yookassa_webhook():
 
         tg_id = int(tg_id_str)
 
+        referrer_uid = metadata.get("referrer_uid")
+
         # Обработка платежа
-        process_successful_payment(tg_id, months, flow)
+        process_successful_payment(tg_id, months, flow, referrer_uid)
 
         # Сохраняем как обработанный
         save_processed_payment(payment_id)
