@@ -1939,18 +1939,21 @@ def get_servers_status():
 
             text += (
                 "🌐 <b>CENTRAL SERVER</b>\n"
-                "──────────────────\n"
+                f"{'─' * 18}\n"
                 f"🖥 CPU: <b>{s.get('cpu', 'N/A')}%</b>\n"
                 f"🧠 RAM: <b>{round(s['mem']['current']/1024**3, 2)}</b> / "
                 f"<b>{round(s['mem']['total']/1024**3, 2)} GB</b>\n"
                 f"🔌 TCP: <b>{s.get('tcpCount', 'N/A')}</b>\n"
-                f"⚙️ XRAY: <b>{s['xray'].get('state', 'N/A')}</b>\n\n"
+                f"⚙️ XRAY: <b>{s['xray'].get('state', 'N/A')}</b>\n"
+                f"{'─' * 18}\n\n"
+
             )
     except Exception as e:
         text += (
             "🌐 <b>CENTRAL SERVER</b>\n"
-            "──────────────────\n"
+            f"{'─' * 18}\n"
             f"❌ <b>Error:</b> <code>{e}</code>\n\n"
+            f"{'─' * 18}\n\n"
         )
 
     # ==================== NODES ====================
@@ -1963,8 +1966,8 @@ def get_servers_status():
 
         nodes = r.json()["obj"]
 
-        text += "🖥 <b>NODES STATUS</b>\n"
-        text += "──────────────────\n\n"
+        text += "🖥 <b>NODES STATUS</b>\n\n"
+        text += f"{'─' * 18}\n"
 
         for node in nodes:
             name = node.get("name", "Unknown")
@@ -1984,7 +1987,8 @@ def get_servers_status():
                 f"🧠 CPU: <b>{cpu_str}</b>\n"
                 f"💾 MEM: <b>{mem_str}</b>\n"
                 f"📶 Latency: <b>{node.get('latencyMs', 'N/A')} ms</b>\n"
-                f"⏱ Uptime: <b>{uptime_days} days</b>\n\n"
+                f"⏱ Uptime: <b>{uptime_days} days</b>\n"
+                f"{'─' * 18}\n\n"
             )
 
     except Exception as e:
