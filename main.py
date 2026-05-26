@@ -473,14 +473,6 @@ def sub(tg_id, message=None):
         with open("users.json", "r", encoding="utf-8") as f:
             users = json.load(f)
 
-        # 2. Ищем по username (пользователь добавлен админом)
-        if username and username != "no_username":
-            uid_by_name, user_by_name = get_user_by_username(username)
-            if user_by_name and user_by_name.get("status") == "approved" and user_by_name.get("tg_id") == "by_admin":
-
-                # Обновляем tgId
-                update_tg_id(uid_by_name, tg_id, username)
-
         uid, user_data = get_user_by_tg_id(tg_id)
 
         if not user_data:
@@ -1169,16 +1161,6 @@ def handle_cancel(call):
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "📦 Моя подписка")
 def subscribe_handler(message):
     tg_id = message.from_user.id
-    sub(tg_id, message)
-
-
-
-# ====================== Реакция на кнопку "Рефералка"  =======================
-@bot.message_handler(func=lambda m: m.text and m.text.strip() == "🎟 Рефералка")
-def referral_handler(message):
-    show_referral(message.chat.id)
-
-def show_referral(tg_id):
     # 2. Ищем по username (пользователь добавлен админом)
     if username and username != "no_username":
         uid_by_name, user_by_name = get_user_by_username(username)
@@ -1187,6 +1169,27 @@ def show_referral(tg_id):
             # Обновляем tgId
             update_tg_id(uid_by_name, tg_id, username)
 
+    # Показываем информацию о подписке
+    sub(tg_id, message)
+
+
+
+# ====================== Реакция на кнопку "Рефералка"  =======================
+@bot.message_handler(func=lambda m: m.text and m.text.strip() == "🎟 Рефералка")
+def referral_handler(message):
+    tg_id = message.from_user.id
+
+    # 2. Ищем по username (пользователь добавлен админом)
+    if username and username != "no_username":
+        uid_by_name, user_by_name = get_user_by_username(username)
+        if user_by_name and user_by_name.get("status") == "approved" and user_by_name.get("tg_id") == "by_admin":
+
+            # Обновляем tgId
+            update_tg_id(uid_by_name, tg_id, username)
+
+    show_referral(tg_id)
+
+def show_referral(tg_id):
     uid, user_data = get_user_by_tg_id(tg_id)
     if not user_data or not user_data.get("referral_code"):
         bot.send_message(tg_id, "❌ Реферальный код не найден.", reply_markup=main_menu())
