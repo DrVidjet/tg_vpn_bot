@@ -525,7 +525,10 @@ def process_months_input(message, tg_id, flow = "new"):
             bot.register_next_step_handler(msg, process_months_input, tg_id, flow)
             return
         username = (message.from_user.username or "no_username").lower().replace("@", "")
-        send_invoice(tg_id, username, months, flow)
+        if flow == "renew":
+            send_invoice(tg_id, username, months, flow)
+        else:
+            ask_referral_before_payment(tg_id, username, months, flow)
 
     except ValueError:
         # Если ввели не число
