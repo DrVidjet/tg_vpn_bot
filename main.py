@@ -1145,7 +1145,8 @@ def show_users_list(message, filter_type="all"):
     all_traffic = get_all_users_traffic()
     online_clients = get_online_clients()
 
-    result = f"👥 Пользователи — {filter_type.upper()}\n\n{'─' * 18}\n\n"
+    messages = []
+    messages.append(f"👥 Пользователи — {filter_type.upper()}\n\n{'─' * 18}\n\n")
     count = 0
     current = ""
 
@@ -1195,7 +1196,7 @@ def show_users_list(message, filter_type="all"):
         )
 
         if len(current) + len(user_block) > 4000:
-            result.append(current)
+            messages.append(current)
             current = ""
 
         current += user_block
