@@ -1341,7 +1341,7 @@ def show_users_list(message, filter_type="all"):
 
     # Отправляем частями
     for i in range(0, len(result), 4000):
-        bot.send_message(message.chat.id, result[i:i+4000])
+        bot.send_message(message.chat.id, result[i:i+4000], parse_mode="HTML")
 
 
 
