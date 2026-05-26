@@ -1055,7 +1055,12 @@ def process_successful_payment(tg_id: int, months: int, flow: str = "new"):
     print(f"Обработка платежа: flow={flow}, months={months}, tg_id={tg_id}, uid={uid}")
 
     if flow == "new":
+        final_months = months
+        if referrer_uid:
+            final_months += 1
+            print(f"✅ Реферальный бонус: +1 месяц новому пользователю (итого {final_months} месяцев)")
         success, error_msg, base_name, expiry_ms, sub_id = create_vpn_client(uid, tg_id, username, months)
+
         if success:
             ref_code = save_user(uid, tg_id, base_name, username, "approved", expiry_ms, sub_id)
 
