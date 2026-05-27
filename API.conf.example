@@ -1,14 +1,16 @@
-[DEFAULT]
-# ================== TG ==================
+[TG]
 ADMIN_ID=00000000000
 SUPPORT_LINK=""
 GRUPP_LINK=""
 API=""
-
-# ================== Payment ==================
 PRICE_PER_MONTH=150
 
-# ================== X-UI / 3x-ui ==================
+[WEB]
+PAY_DOMEN="example.com"
+PAY_WEBHOOK="yookassa_webhook"
+FLASK_PORT=5000
+
+[3XUI]
 XUI_URL="https://example.com/asdgd/panel"
 XUI_API_TOKEN=""
 XUI_SUB_LINK="https://example.com:1111/sub"
@@ -16,6 +18,5 @@ XUI_INBOUND_IDS=1,2,3
 XUI_EXPIRY_DAYS=30
 
 [UKASSA]
-PROVIDER_TOKEN=""
 SHOP_ID=""
 SECRET_KEY=""
