@@ -1080,8 +1080,8 @@ def process_successful_payment(tg_id: int, months: int, flow: str = "new", refer
 
             safe_send_message(tg_id,
                 "🎉 <b>Подписка успешно активирована!</b>\n\n"
-                f"🔗 <b>Ваша ссылка на подписку:</b>\n"
-                f"<code>{sub_link}</code>\n"
+                f"🔗 <b>Ваша ссылка на подписку:</b>\n\n"
+                f"<code>{sub_link}</code>\n\n"
                 "Переходить по ссылке не нужно, ее необходимо скопировать и вставить в приложение.\n\n"
                 f"🎟 Ваш реферальный код:\n"
                 f"<code>{ref_code}</code>\n"
