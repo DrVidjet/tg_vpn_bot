@@ -30,7 +30,11 @@ API_TOKEN = config.get('TG', 'API').strip('"')
 ADMIN_ID = config.getint('TG', 'ADMIN_ID')
 SUPPORT = config.get('TG', 'SUPPORT_LINK').strip('"')
 GRUPP = config.get('TG', 'GRUPP_LINK').strip('"')
-PRICE_PER_MONTH = config.getint('TG', 'PRICE_PER_MONTH')
+PRICE_PER_MONTH = config.getint('CELL', 'PRICE_PER_MONTH')
+FIRST_DISCOUNT_COUNT_MONTH= config.getint('CELL', 'FIRST_DISCOUNT_COUNT_MONTH')
+PRICE_PER_ONE_FIRST_DISCOUNT_MONTH = config.getint('CELL', 'PRICE_PER_ONE_FIRST_DISCOUNT_MONTH')
+SECOND_DISCOUNT_COUNT_MONTH= config.getint('CELL', 'SECOND_DISCOUNT_COUNT_MONTH')
+PRICE_PER_ONE_SECOND_DISCOUNT_MONTH = config.getint('CELL', 'PRICE_PER_ONE_SECOND_DISCOUNT_MONTH')
 
 PAY_DOMEN = config.get('WEB', 'PAY_DOMEN').strip('"')
 PAY_WEBHOOK = config.get('WEB', 'PAY_WEBHOOK').strip('"')
@@ -110,7 +114,7 @@ def create_vpn_client(uid: int, tg_id: str = None, username: str = None, months:
     client_payload = {
         "email": base_name,
         "subId": sub_id,
-        "limitIp": 0,
+        "limitIp": 3,
         "totalGB": 0,
         "expiryTime": expiry_ms,
         "enable": True,
@@ -764,12 +768,12 @@ def save_processed_payment(payment_id):
 
 # Скидки
 def get_price_per_month(months: int) -> int:
-    if months >= 8:
-        return 100
-    elif months >= 3:
-        return 125
+    if months >= SECOND_DISCOUNT_COUNT_MONTH:
+        return PRICE_PER_ONE_SECOND_DISCOUNT_MONTH
+    elif months >= FIRST_DISCOUNT_COUNT_MONTH:
+        return PRICE_PER_ONE_FIRST_DISCOUNT_MONTH
     else:
-        return PRICE_PER_MONTH  # базовая цена из конфига
+        return PRICE_PER_MONTH
 
 
 
@@ -1472,7 +1476,7 @@ def show_users_list(message, filter_type="all"):
 
             f"🔑 <b>Ref код:</b> <code>{ref_code}</code>\n\n"
 
-            f"📊 <b>Статус:</b> {'🟢 Онлайн' if online else '🔴 Офлайн'}\n\n"
+            f"📊 <b>Status:</b> {'🟢 Online' if online else '🔴 Offline'}\n\n"
 
             f"⬆️ <b>Upload:</b> {up} GB\n"
             f"⬇️ <b>Download:</b> {down} GB\n\n"
@@ -1962,7 +1966,7 @@ def get_servers_status():
                 f"🖥 <b>{name}</b>\n"
                 f"{'🟢 Online' if status == 'online' else '🔴 Offline'}\n"
                 f"🧠 CPU: <b>{cpu_str}</b>\n"
-                f"💾 RUM: <b>{mem_str}</b>\n"
+                f"💾 RAM: <b>{mem_str}</b>\n"
                 f"📶 Latency: <b>{node.get('latencyMs', 'N/A')} ms</b>\n"
                 f"⏱ Uptime: <b>{uptime_days} days</b>\n\n"
                 f"{'─' * 18}\n\n"
