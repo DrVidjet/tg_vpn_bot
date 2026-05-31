@@ -63,6 +63,7 @@ XUI_API_TOKEN = config.get('3XUI', 'XUI_API_TOKEN').strip('"')
 XUI_INBOUND_IDS = [int(x.strip()) for x in config.get('3XUI', 'XUI_INBOUND_IDS').split(',')]
 XUI_SUB_LINK = config.get('3XUI', 'XUI_SUB_LINK').strip('"')
 XUI_EXPIRY_DAYS = config.getint('3XUI', 'XUI_EXPIRY_DAYS', fallback=31)
+XUI_CLIENT_LIMIT_IP = config.getint('3XUI', 'XUI_CLIENT_LIMIT_IP', fallback=3)
 
 headers = {
     "Authorization": f"Bearer {XUI_API_TOKEN}",
@@ -114,7 +115,7 @@ def create_vpn_client(uid: int, tg_id: str = None, username: str = None, months:
     client_payload = {
         "email": base_name,
         "subId": sub_id,
-        "limitIp": 3,
+        "limitIp": XUI_CLIENT_LIMIT_IP,
         "totalGB": 0,
         "expiryTime": expiry_ms,
         "enable": True,
@@ -379,10 +380,7 @@ def instruction_send(tg_id):
         "IOS: https://apps.apple.com/kz/app/v2raytun/id6476628951\n"
         "Windows, MAC, Linux: https://v2raytun.com/\n"
         "А так же другие клиенты и инструкции к ним можно посмотреть по этой ссылке:\n https://gist.github.com/kksudo/9e2072b3c60a72040f4e9d6fb9da7e9c\n\n"
-        "2. Для Android и IOS следуйте видеоинструкции ниже. На IOS пропускаем часть с маршрутизацией приложений.\n\n"
-        "3. Пользуемся подключениями:\n 🏴‍☠Устройство-1,2,3\nВнешние сервера:\n🇫🇮HELSINKI, 🇸🇪STOKGOLM и тд\nиспользуем только если основное подключение отвалилось!\n\n"
-        "4. Одно устройство - 1 подключение. Что это значит? Например хотим сидеть с ноутбука и с телефона. На ноутбуке выбираем 🏴‍☠Устройство-1, на телефоне 🏴‍☠Устройство-2. СИДЕТЬ С ДВУХ УСТРОЙСТВ НА ОДНОМ ПОДКЛЮЧЕНИИ НЕЛЬЗЯ!\n\n"
-        f"Если будут вопросы — 👤 Напишите сюда: {SUPPORT}\n⏱ Мы ответим вам как можно скорее.",
+        "2. Для Android и IOS следуйте видеоинструкции ниже. На IOS пропускаем часть с маршрутизацией приложений. На ПК всё делается аналогично видеоинструкции, интерфейс на телефоне и компьютере у программы практически одинаковый, но опять же, пропуская момент с маршрутизацией приложений.\n\n",
         parse_mode="HTML"
     )
 
@@ -550,22 +548,38 @@ def process_months_input(message, tg_id, flow = "new"):
 
 
 # Отправляет уведомление админу об успешной оплате
-def admin_notify(tg_id: int, username: str, email: str, months: int, amount: int, payment_type: str):
+def admin_notify(tg_id: int, username: str, email: str, months: int, amount: int, payment_type: str, referrer_uid: str = None):
+    text = (
+        f"💰 <b>Новая оплата</b>\n\n"
+        f"Пользователь: @{username} ({tg_id})\n"
+        f"Email: <code>{email}</code>\n"
+        f"Тип: {payment_type}\n"
+        f"Месяцев: {months}\n"
+        f"Сумма: {amount // 100} ₽\n\n"
+        f"Время: {datetime.now(ZoneInfo('Europe/Moscow')).strftime('%d.%m.%Y %H:%M')}"
+    )
+
+    if referrer_code:
+        try:
+            with open("users.json", "r", encoding="utf-8") as f:
+                users = json.load(f)
+            referrer = users.get(str(referrer_uid))
+            if referrer:
+                ref_username = referrer.get("username", "no_username")
+                ref_email = referrer.get("email", "—")
+                if ref_username:
+                    text += f"🔗 Привёл: @{ref_username} ({ref_email})\n"
+                else:
+                    text += f"🔗 Привёл: {ref_email}\n"
+        except:
+            text += f"🔗 Привёл: UID {referrer_uid}\n"
+
+    text += f"\nВремя: {datetime.now(ZoneInfo('Europe/Moscow')).strftime('%d.%m.%Y %H:%M')}"
+
     try:
-        bot.send_message(
-            ADMIN_ID,
-            f"💰 <b>Новая оплата</b>\n\n"
-            f"Пользователь: @{username} ({tg_id})\n"
-            f"Email: <code>{email}</code>\n"
-            f"Тип: {payment_type}\n"
-            f"Месяцев: {months}\n"
-            f"Сумма: {amount // 100} ₽\n\n"
-            f"Время: {datetime.now(ZoneInfo('Europe/Moscow')).strftime('%d.%m.%Y %H:%M')}",
-            parse_mode="HTML"
-        )
+        bot.send_message(ADMIN_ID, text, parse_mode="HTML")
     except Exception as e:
         print(f"Не удалось отправить уведомление админу: {e}")
-
 
 
 # Уведомления пользователям об истекающих подписках
@@ -644,6 +658,14 @@ def months_word(months: int) -> str:
         return "месяца"
     else:
         return "месяцев"
+
+def device_ru():
+    if XUI_CLIENT_LIMIT_IP % 10 == 1 and XUI_CLIENT_LIMIT_IP % 100 != 11:
+        return "устройство"
+    elif XUI_CLIENT_LIMIT_IP % 10 in [2, 3, 4] and XUI_CLIENT_LIMIT_IP % 100 not in [12, 13, 14]:
+        return "устройства"
+    else:
+        return "устройств"
 
 
 
@@ -729,6 +751,7 @@ def send_invoice(tg_id: int, username: str, months: int = 1, flow: str = "new", 
 
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("💳 Перейти к оплате", url=confirmation_url))
+            markup.add(types.InlineKeyboardButton("❌ Отменить оплату", callback_data=f"cancel_payment:{tg_id}"))
 
             bot.send_message(
                 tg_id,
@@ -1049,6 +1072,36 @@ def process_referral_input(message, tg_id, username, months, flow):
     bot.send_message(tg_id, "✅ Реферальный код принят. Переходим к оплате...")
 
 
+
+# Обработчик отмены оплаты
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_payment")
+def cancel_payment(call):
+    tg_id = call.from_user.id
+    pending_requests.pop(tg_id, None)
+
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+    bot.answer_callback_query(call.id, "Оплата отменена")
+
+    # Вызываем /start как будто пользователь нажал старт заново
+    fake_message = types.Message(
+        message_id=0,
+        from_user=call.from_user,
+        chat=call.message.chat,
+        date=datetime.now(),
+        content_type='text',
+        options={},
+        json_string='{"text": "/start"}'
+    )
+    fake_message.text = "/start"
+
+    start_handler(fake_message)
+
+
+
 # Универсальная обработка успешной оплаты
 def process_successful_payment(tg_id: int, months: int, flow: str = "new", referrer_uid: str = None):
     data = pending_requests.get(tg_id, {})
@@ -1075,7 +1128,7 @@ def process_successful_payment(tg_id: int, months: int, flow: str = "new", refer
 
             sub_link = f"{XUI_SUB_LINK}/{sub_id}"
 
-            admin_notify(tg_id, username, base_name, months, amount, "Новая подписка")
+            admin_notify(tg_id, username, base_name, months, amount, "Новая подписка", referrer_uid)
             instruction_send(tg_id)
 
             safe_send_message(tg_id,
@@ -1219,7 +1272,7 @@ def show_referral(tg_id):
 
         "• Обход блокировок и белых списков\n"
         "• Без ограничений по скорости и трафику\n"
-        "• 3 устройства на одной подписке\n"
+        f"• {XUI_CLIENT_LIMIT_IP} {device_ru()} на одной подписке\n"
         "• Смешные цены и система скидок\n"
         "• Реферальная система\n\n"
 
@@ -1457,12 +1510,8 @@ def show_users_list(message, filter_type="all"):
         ).strftime("%d.%m.%Y %H:%M")
 
         online = False
-        if email:
-            for inbound_id in XUI_INBOUND_IDS:
-                check_email = f"{email}@inbound{inbound_id}"
-                if check_email in online_clients:
-                    online = True
-                    break
+        if email and email in online_clients:
+            online = True
 
         traffic_data = all_traffic.get(email, {})
         up = round(traffic_data.get("up", 0) / (1024**3), 2)
@@ -1511,17 +1560,14 @@ def show_users_list(message, filter_type="all"):
 def get_online_clients():
     try:
         r = requests.post(
-            f"{XUI_URL}/panel/api/inbounds/onlines",
+            f"{XUI_URL}/panel/api/clients/onlines",
             headers=headers,
             timeout=15
         )
-
         if r.status_code == 200 and r.json().get("success"):
             return set(r.json().get("obj", []))
-
     except Exception as e:
-        print(f"Online error: {e}")
-
+        print(f"Online check error: {e}")
     return set()
 
 
