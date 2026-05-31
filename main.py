@@ -1084,20 +1084,9 @@ def cancel_payment(call):
     except:
         pass
 
-    bot.answer_callback_query(call.id, "Оплата отменена")
+    bot.send_message(call.id, "Оплата отменена.")
 
-    # Вызываем /start как будто пользователь нажал старт заново
-    fake_message = types.Message(
-        message_id=0,
-        from_user=call.from_user,
-        chat=call.message.chat,
-        date=datetime.now(),
-        content_type='text',
-        options={},
-        json_string='{"text": "/start"}'
-    )
-
-    start_handler(fake_message)
+    start_handler("/start")
 
 
 
