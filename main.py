@@ -1076,19 +1076,21 @@ def process_referral_input(message, tg_id, username, months, flow):
 # Обработчик отмены оплаты
 @bot.callback_query_handler(func=lambda call: call.data == "cancel_payment")
 def cancel_payment(call):
+    print("1")
     tg_id = call.from_user.id
-
+    print("2")
     # Удаляем сообщение с кнопками оплаты
     try:
         bot.delete_message(call.message.chat.id, call.message.message_id)
     except Exception as e:
         print(e)
 
+    print("3")
     # Очищаем состояние
     pending_requests.pop(tg_id, None)
-
+    print("4")
     bot.answer_callback_query(call.id, "Оплата отменена ✅")
-
+    print("5")
     # Отправляем сообщение и вызываем старт
     bot.send_message(tg_id, "❌ Оплата отменена.")
 
