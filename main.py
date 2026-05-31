@@ -1077,16 +1077,34 @@ def process_referral_input(message, tg_id, username, months, flow):
 @bot.callback_query_handler(func=lambda call: call.data == "cancel_payment")
 def cancel_payment(call):
     tg_id = call.from_user.id
-    pending_requests.pop(tg_id, None)
 
+    # Удаляем сообщение с кнопками оплаты
     try:
         bot.delete_message(call.message.chat.id, call.message.message_id)
     except:
         pass
 
-    bot.send_message(call.id, "Оплата отменена.")
+    # Очищаем состояние
+    pending_requests.pop(tg_id, None)
 
-    start_handler("/start")
+    bot.answer_callback_query(call.id, "Оплата отменена ✅")
+
+    # Отправляем сообщение и вызываем старт
+    bot.send_message(tg_id, "❌ Оплата отменена.")
+
+    # Создаём фейковое сообщение и вызываем start_handler
+    fake_message = types.Message(
+        message_id=0,
+        from_user=call.from_user,
+        chat=call.message.chat,
+        date=datetime.now(ZoneInfo("Europe/Moscow")),
+        content_type='text',
+        text="/start",
+        json_string='{"text": "/start"}'
+    )
+    fake_message.text = "/start"
+
+    start_handler(fake_message)
 
 
 
