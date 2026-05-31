@@ -1,30 +1,37 @@
 [TG]
-ADMIN_ID=00000000000
-SUPPORT_LINK=""
-GRUPP_LINK=""
-API=""
+ADMIN_ID=00000000000 				# ID админа
+SUPPORT_LINK=""					# Ссылка на техподдержку
+GRUPP_LINK=""					# Ссылка на группу в тг
+API=""						# API ключ бота (можно узнать у bot_father)
 
 [CELL]
-PRICE_PER_MONTH=150
-FIRST_DISCOUNT_COUNT_MONTH=3
+PRICE_PER_MONTH=150				# Цена за месяц
+FIRST_DISCOUNT_COUNT_MONTH=3			# От трёх месяцев скидка
 PRICE_PER_ONE_FIRST_DISCOUNT_MONTH=125
-SECOND_DISCOUNT_COUNT_MONTH=8
+SECOND_DISCOUNT_COUNT_MONTH=8			# От 8 месяцев скидка
 PRICE_PER_ONE_SECOND_DISCOUNT_MONTH=100
 
 
 [WEB]
-PAY_DOMEN="example.com"
-PAY_WEBHOOK="yookassa_webhook"
-FLASK_PORT=5000
+PAY_DOMEN="example.com"				# Домен на который yookassa будет слать вебхуки 
+PAY_WEBHOOK="yookassa_webhook"			# endpoint для вебхуков
+FLASK_PORT=5000					# Порт flask сервера который будет ловить вебхуки
+
+# (если есть nginx, PAY_DOMEN ставим 127.0.0.1) 
+# Так же внешний домен + endpoint нужно будет добавить на юкассу в http уведомления магазина
+# В нашем случае, если есть nginx или другой обратный прокси, ловить будем на 127.0.0.1:5000/yookassa_webhook
+# Но юкассе в личном кабинете адрес для вебхуков пишем https://example.com/yookassa_webhook
+# ssl обязателен, иначе юкасса отправлять ничего не будет
+# Рекомендуется использовать обратный прокси
 
 [3XUI]
-XUI_URL="https://example.com/asdgd/panel"
-XUI_API_TOKEN=""
-XUI_SUB_LINK="https://example.com:1111/sub"
-XUI_INBOUND_IDS=1,2,3
-XUI_EXPIRY_DAYS=30
-XUI_CLIENT_LIMIT_IP=3
+XUI_URL="https://example.com/asdgd/panel"	# Адрес 3x-ui панели
+XUI_API_TOKEN=""				# API токен панели
+XUI_SUB_LINK="https://example.com:1111/sub"	# Адрес подписки (можно узнать в настройках 3x-ui)
+XUI_INBOUND_IDS=1,2,3				# Инбаунды с которыми работаем (в которых бот будет держать пользователей)
+XUI_EXPIRY_DAYS=30				# Кол-во дней на которые будет продляться подписка в качестве месяца
+XUI_CLIENT_LIMIT_IP=3				# Ограничение по устройствам на клиента (0 - неограниченно)
 
 [UKASSA]
-SHOP_ID=""
-SECRET_KEY=""
+SHOP_ID=""					# shop_id из личного кабинета юкассы
+SECRET_KEY=""					# secret_key (генерируется в личном кабинете на странице магазина)
