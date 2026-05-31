@@ -1096,7 +1096,6 @@ def cancel_payment(call):
         options={},
         json_string='{"text": "/start"}'
     )
-    fake_message.text = "/start"
 
     start_handler(fake_message)
 
