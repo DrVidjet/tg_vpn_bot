@@ -1081,8 +1081,8 @@ def cancel_payment(call):
     # Удаляем сообщение с кнопками оплаты
     try:
         bot.delete_message(call.message.chat.id, call.message.message_id)
-    except:
-        pass
+    except Exception as e:
+        print(e)
 
     # Очищаем состояние
     pending_requests.pop(tg_id, None)
