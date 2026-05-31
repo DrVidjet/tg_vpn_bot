@@ -751,7 +751,7 @@ def send_invoice(tg_id: int, username: str, months: int = 1, flow: str = "new", 
 
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("💳 Перейти к оплате", url=confirmation_url))
-            markup.add(types.InlineKeyboardButton("❌ Отменить оплату", callback_data=f"cancel_payment:{tg_id}"))
+            markup.add(types.InlineKeyboardButton("❌ Отменить оплату", callback_data=f"cancel_payment"))
 
             bot.send_message(
                 tg_id,
@@ -1076,32 +1076,24 @@ def process_referral_input(message, tg_id, username, months, flow):
 # Обработчик отмены оплаты
 @bot.callback_query_handler(func=lambda call: call.data == "cancel_payment")
 def cancel_payment(call):
-    print("1")
     tg_id = call.from_user.id
-    print("2")
-    # Удаляем сообщение с кнопками оплаты
+    pending_requests.pop(tg_id, None)
+
     try:
         bot.delete_message(call.message.chat.id, call.message.message_id)
-    except Exception as e:
-        print(e)
+    except:
+        pass
 
-    print("3")
-    # Очищаем состояние
-    pending_requests.pop(tg_id, None)
-    print("4")
-    bot.answer_callback_query(call.id, "Оплата отменена ✅")
-    print("5")
-    # Отправляем сообщение и вызываем старт
-    bot.send_message(tg_id, "❌ Оплата отменена.")
+    bot.answer_callback_query(call.id, "Оплата отменена")
 
-    # Создаём фейковое сообщение и вызываем start_handler
+    # Вызываем /start как будто пользователь нажал старт заново
     fake_message = types.Message(
         message_id=0,
         from_user=call.from_user,
         chat=call.message.chat,
-        date=datetime.now(ZoneInfo("Europe/Moscow")),
+        date=datetime.now(),
         content_type='text',
-        text="/start",
+        options={},
         json_string='{"text": "/start"}'
     )
     fake_message.text = "/start"
