@@ -1955,7 +1955,7 @@ def servers_status(message):
 
 # Получение статуса серверов
 def get_servers_status():
-    text = "🖥 Статус серверов\n\n"
+    text = "🖥 Server status\n\n"
 
     # ==================== CENTRAL ====================
     try:
@@ -2015,7 +2015,7 @@ def get_servers_status():
             status_emoji = "🟢" if status == "online" else "🔴"
 
             text += (
-                f"<b>{name}</b>\n"
+                f"<b>{name}</b>\n\n"
                 f"{status_emoji} <b>{'Online' if status == 'online' else 'Offline'}</b>\n"
                 f"🧠 CPU: <b>{cpu_str}</b>\n"
                 f"💾 RAM: <b>{mem_str}</b>\n"
