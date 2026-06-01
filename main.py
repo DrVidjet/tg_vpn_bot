@@ -2007,7 +2007,6 @@ def get_servers_status():
             latency = node.get("latencyMs")
             uptime_secs = node.get("uptimeSecs", 0)
             online_count = node.get("onlineCount", 0)
-            client_count = node.get("clientCount", 0)
 
             cpu_str = f"{round(cpu_pct, 1)}%" if isinstance(cpu_pct, (int, float)) else "N/A"
             mem_str = f"{round(mem_pct, 1)}%" if isinstance(mem_pct, (int, float)) else "N/A"
@@ -2016,13 +2015,13 @@ def get_servers_status():
             status_emoji = "🟢" if status == "online" else "🔴"
 
             text += (
-                f"{status_emoji} <b>{name}</b>\n"
-                f"Статус: <b>{'Online' if status == 'online' else 'Offline'}</b>\n"
+                f"<b>{name}</b>\n"
+                f"Статус: {status_emoji} <b>{'Online' if status == 'online' else 'Offline'}</b>\n"
                 f"🧠 CPU: <b>{cpu_str}</b>\n"
                 f"💾 RAM: <b>{mem_str}</b>\n"
                 f"📶 Latency: <b>{latency} ms</b>\n"
-                f"⏱ Uptime: <b>{uptime_days} дн.</b>\n"
-                f"👥 Клиентов: <b>{client_count}</b> | Онлайн: <b>{online_count}</b>\n\n"
+                f"⏱ Uptime: <b>{uptime_days} days.</b>\n"
+                f"👥 Online: <b>{online_count}</b>\n\n"
                 f"{'─' * 20}\n\n"
             )
 
