@@ -2020,8 +2020,7 @@ def get_servers_status():
                 f"🧠 CPU: <b>{cpu_str}</b>\n"
                 f"💾 RAM: <b>{mem_str}</b>\n"
                 f"📶 Latency: <b>{latency} ms</b>\n"
-                f"⏱ Uptime: <b>{uptime_days} days.</b>\n"
-                f"👥 Online: <b>{online_count}</b>\n\n"
+                f"⏱ Uptime: <b>{uptime_days} days.</b>\n\n"
                 f"{'─' * 20}\n\n"
             )
 
