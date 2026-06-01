@@ -1975,13 +1975,13 @@ def get_servers_status():
 
             text += (
                 "🌐 <b>CENTRAL SERVER</b>\n"
-                f"{'─' * 22}\n\n"
+                f"{'─' * 18}\n\n"
                 f"🧠 CPU: <b>{cpu:.1f}%</b>\n"
                 f"💾 RAM: <b>{mem_current} / {mem_total} GB</b>\n"
                 f"📦 Disk: <b>{disk_current} / {disk_total} GB</b>\n"
                 f"🔌 TCP: <b>{tcp_count}</b>\n"
                 f"⚙️ XRAY: <b>{xray_state}</b> (<code>{xray_version}</code>)\n\n"
-                f"{'─' * 22}\n\n"
+                f"{'─' * 18}\n\n"
             )
         else:
             text += "🌐 <b>CENTRAL SERVER</b>\n❌ Не удалось получить статус\n\n"
@@ -1989,9 +1989,9 @@ def get_servers_status():
     except Exception as e:
         text += (
             "🌐 <b>CENTRAL SERVER</b>\n"
-            f"{'─' * 22}\n"
+            f"{'─' * 18}\n"
             f"❌ <b>Error:</b> <code>{str(e)[:250]}</code>\n\n"
-            f"{'─' * 22}\n\n"
+            f"{'─' * 18}\n\n"
         )
 
     # ==================== NODES ====================
@@ -2009,7 +2009,7 @@ def get_servers_status():
             return text
 
         text += f"🖥 <b>NODES STATUS</b> — {len(nodes)} nodes\n\n"
-        text += f"{'─' * 20}\n"
+        text += f"{'─' * 18}\n"
 
         for node in nodes:
             name = node.get("name", "Unknown")
@@ -2033,7 +2033,7 @@ def get_servers_status():
                 f"💾 RAM: <b>{mem_str}</b>\n"
                 f"📶 Latency: <b>{latency} ms</b>\n"
                 f"⏱ Uptime: <b>{uptime_days} days.</b>\n\n"
-                f"{'─' * 20}\n\n"
+                f"{'─' * 18}\n\n"
             )
 
     except Exception as e:
