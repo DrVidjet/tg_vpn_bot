@@ -559,7 +559,7 @@ def admin_notify(tg_id: int, username: str, email: str, months: int, amount: int
         f"Время: {datetime.now(ZoneInfo('Europe/Moscow')).strftime('%d.%m.%Y %H:%M')}"
     )
 
-    if referrer_code:
+    if referrer_uid:
         try:
             with open("users.json", "r", encoding="utf-8") as f:
                 users = json.load(f)
@@ -967,7 +967,6 @@ def ask_vpn_offer(chat_id):
         chat_id,
         "🔥 <b>Добро пожаловать в VidjetVPN</b> 🔥\n\n"
         "⚡ <b>Преимущества:</b>\n"
-        "• Обход белых списков\n"
         "• Без ограничений по трафику\n"
         "• Высокая скорость соединения\n"
         "• Стабильная работа\n"
@@ -1270,7 +1269,7 @@ def show_referral(tg_id):
     invite_text = (
         "\n\n🔥 Присоединяйся к\n\n  🏴‍☠️VidjetVPN🏴‍☠️\n\n"
 
-        "• Обход блокировок и белых списков\n"
+        "• Обход блокировок\n"
         "• Без ограничений по скорости и трафику\n"
         f"• {XUI_CLIENT_LIMIT_IP} {device_ru()} на одной подписке\n"
         "• Смешные цены и система скидок\n"
