@@ -1976,7 +1976,7 @@ def get_servers_status():
             text += (
                 "🌐 <b>CENTRAL SERVER</b>\n"
                 f"{'─' * 22}\n\n"
-                f"🧠 CPU: <b>{cpu}%</b>\n"
+                f"🧠 CPU: <b>{cpu:.1f}%</b>\n"
                 f"💾 RAM: <b>{mem_current} / {mem_total} GB</b>\n"
                 f"📦 Disk: <b>{disk_current} / {disk_total} GB</b>\n"
                 f"🔌 TCP: <b>{tcp_count}</b>\n"
