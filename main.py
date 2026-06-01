@@ -2016,7 +2016,7 @@ def get_servers_status():
 
             text += (
                 f"<b>{name}</b>\n"
-                f"Статус: {status_emoji} <b>{'Online' if status == 'online' else 'Offline'}</b>\n"
+                f"{status_emoji} <b>{'Online' if status == 'online' else 'Offline'}</b>\n"
                 f"🧠 CPU: <b>{cpu_str}</b>\n"
                 f"💾 RAM: <b>{mem_str}</b>\n"
                 f"📶 Latency: <b>{latency} ms</b>\n"
