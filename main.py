@@ -1993,38 +1993,38 @@ def get_servers_status():
         nodes = r.json()["obj"]
 
         if not nodes:
-                    text += "🖥 <b>NODES</b>\nНет подключённых нод\n"
-                    return text
+            text += "🖥 <b>NODES</b>\nНет подключённых нод\n"
+            return text
 
-                text += f"🖥 <b>NODES STATUS</b> — {len(nodes)} нод\n\n"
-                text += f"{'─' * 20}\n"
+        text += f"🖥 <b>NODES STATUS</b> — {len(nodes)} нод\n\n"
+        text += f"{'─' * 20}\n"
 
-                for node in nodes:
-                    name = node.get("name", "Unknown")
-                    status = node.get("status", "unknown")
-                    cpu_pct = node.get("cpuPct")
-                    mem_pct = node.get("memPct")
-                    latency = node.get("latencyMs")
-                    uptime_secs = node.get("uptimeSecs", 0)
-                    online_count = node.get("onlineCount", 0)
-                    client_count = node.get("clientCount", 0)
+            for node in nodes:
+                name = node.get("name", "Unknown")
+                status = node.get("status", "unknown")
+                cpu_pct = node.get("cpuPct")
+                mem_pct = node.get("memPct")
+                latency = node.get("latencyMs")
+                uptime_secs = node.get("uptimeSecs", 0)
+                online_count = node.get("onlineCount", 0)
+                client_count = node.get("clientCount", 0)
 
-                    cpu_str = f"{round(cpu_pct, 1)}%" if isinstance(cpu_pct, (int, float)) else "N/A"
-                    mem_str = f"{round(mem_pct, 1)}%" if isinstance(mem_pct, (int, float)) else "N/A"
-                    uptime_days = uptime_secs // 86400
+                cpu_str = f"{round(cpu_pct, 1)}%" if isinstance(cpu_pct, (int, float)) else "N/A"
+                mem_str = f"{round(mem_pct, 1)}%" if isinstance(mem_pct, (int, float)) else "N/A"
+                uptime_days = uptime_secs // 86400
 
-                    status_emoji = "🟢" if status == "online" else "🔴"
+                status_emoji = "🟢" if status == "online" else "🔴"
 
-                    text += (
-                        f"{status_emoji} <b>{name}</b>\n"
-                        f"Статус: <b>{'Online' if status == 'online' else 'Offline'}</b>\n"
-                        f"🧠 CPU: <b>{cpu_str}</b>\n"
-                        f"💾 RAM: <b>{mem_str}</b>\n"
-                        f"📶 Latency: <b>{latency} ms</b>\n"
-                        f"⏱ Uptime: <b>{uptime_days} дн.</b>\n"
-                        f"👥 Клиентов: <b>{client_count}</b> | Онлайн: <b>{online_count}</b>\n\n"
-                        f"{'─' * 20}\n\n"
-                    )
+                text += (
+                    f"{status_emoji} <b>{name}</b>\n"
+                    f"Статус: <b>{'Online' if status == 'online' else 'Offline'}</b>\n"
+                    f"🧠 CPU: <b>{cpu_str}</b>\n"
+                    f"💾 RAM: <b>{mem_str}</b>\n"
+                    f"📶 Latency: <b>{latency} ms</b>\n"
+                    f"⏱ Uptime: <b>{uptime_days} дн.</b>\n"
+                    f"👥 Клиентов: <b>{client_count}</b> | Онлайн: <b>{online_count}</b>\n\n"
+                    f"{'─' * 20}\n\n"
+                )
 
             except Exception as e:
                 text += f"🖥 <b>NODES ERROR:</b> <code>{str(e)[:300]}</code>\n"
