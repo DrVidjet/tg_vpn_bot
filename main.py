@@ -1987,16 +1987,16 @@ def get_servers_status():
         r = requests.get(f"{XUI_URL}/panel/api/nodes/list", headers=headers, timeout=15)
 
         if r.status_code != 200 or not r.json().get("success"):
-            text += "🖥 <b>NODES</b>\n❌ Не удалось получить список нод\n"
+            text += "🖥 <b>NODES</b>\n❌ Failed to get node list\n"
             return text
 
         nodes = r.json()["obj"]
 
         if not nodes:
-            text += "🖥 <b>NODES</b>\nНет подключённых нод\n"
+            text += "🖥 <b>NODES</b>\nNo nodes\n"
             return text
 
-        text += f"🖥 <b>NODES STATUS</b> — {len(nodes)} нод\n\n"
+        text += f"🖥 <b>NODES STATUS</b> — {len(nodes)} nodes\n\n"
         text += f"{'─' * 20}\n"
 
         for node in nodes:
