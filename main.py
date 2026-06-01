@@ -1955,7 +1955,7 @@ def servers_status(message):
 
 # Получение статуса серверов
 def get_servers_status():
-    text = "🖥 Server status\n\n"
+    text = ""
 
     # ==================== CENTRAL ====================
     try:
