@@ -1957,29 +1957,41 @@ def servers_status(message):
 def get_servers_status():
     text = ""
 
-    # ==================== CENTRAL ====================
+    # ==================== CENTRAL SERVER ====================
     try:
         r = requests.get(f"{XUI_URL}/panel/api/server/status", headers=headers, timeout=15)
+
         if r.status_code == 200 and r.json().get("success"):
             s = r.json()["obj"]
 
+            cpu = s.get('cpu', 'N/A')
+            mem_current = round(s['mem']['current'] / 1024**3, 2) if 'mem' in s else 'N/A'
+            mem_total = round(s['mem']['total'] / 1024**3, 2) if 'mem' in s else 'N/A'
+            disk_current = round(s.get('disk', {}).get('current', 0) / 1024**3, 1)
+            disk_total = round(s.get('disk', {}).get('total', 0) / 1024**3, 1)
+            xray_state = s.get('xray', {}).get('state', 'N/A')
+            xray_version = s.get('xray', {}).get('version', 'N/A')
+            tcp_count = s.get('tcpCount', 'N/A')
+
             text += (
                 "🌐 <b>CENTRAL SERVER</b>\n"
-                f"{'─' * 18}\n\n"
-                f"🧠 CPU: <b>{s.get('cpu', 'N/A')}%</b>\n"
-                f"💾 RAM: <b>{round(s['mem']['current']/1024**3, 2)}</b> / "
-                f"<b>{round(s['mem']['total']/1024**3, 2)} GB</b>\n"
-                f"🔌 TCP: <b>{s.get('tcpCount', 'N/A')}</b>\n"
-                f"⚙️ XRAY: <b>{s['xray'].get('state', 'N/A')}</b>\n\n"
-                f"{'─' * 18}\n\n"
-
+                f"{'─' * 22}\n\n"
+                f"🧠 CPU: <b>{cpu}%</b>\n"
+                f"💾 RAM: <b>{mem_current} / {mem_total} GB</b>\n"
+                f"📦 Disk: <b>{disk_current} / {disk_total} GB</b>\n"
+                f"🔌 TCP: <b>{tcp_count}</b>\n"
+                f"⚙️ XRAY: <b>{xray_state}</b> (<code>{xray_version}</code>)\n\n"
+                f"{'─' * 22}\n\n"
             )
+        else:
+            text += "🌐 <b>CENTRAL SERVER</b>\n❌ Не удалось получить статус\n\n"
+
     except Exception as e:
         text += (
             "🌐 <b>CENTRAL SERVER</b>\n"
-            f"{'─' * 18}\n"
-            f"❌ <b>Error:</b> <code>{e}</code>\n\n"
-            f"{'─' * 18}\n\n"
+            f"{'─' * 22}\n"
+            f"❌ <b>Error:</b> <code>{str(e)[:250]}</code>\n\n"
+            f"{'─' * 22}\n\n"
         )
 
     # ==================== NODES ====================
