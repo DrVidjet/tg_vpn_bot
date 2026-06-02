@@ -691,8 +691,9 @@ def admin_panel():
     markup.add("➕ Добавить пользователя")
     markup.add("🔄 Продлить пользователя")
     markup.add("🗑 Удалить пользователя")
-    markup.add("📊 Отчет по оплатам")
     markup.add("🖥 Статус серверов")
+    markup.add("🔄 Синхронизировать пользователей")
+    markup.add("📊 Отчет по оплатам")
 
     return markup
 
@@ -2040,6 +2041,121 @@ def get_servers_status():
         text += f"🖥 <b>NODES ERROR:</b> <code>{str(e)[:300]}</code>\n"
 
     return text
+
+
+
+# ========= Реакция на кнопку "Синхронизация пользователей" ============
+@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "🔄 Синхронизировать пользователей")
+def sync_users_handler(message):
+    if not is_admin(message.from_user.id):
+        return
+
+    bot.send_message(message.chat.id, "🔄 Запускаю синхронизацию пользователей с 3x-ui...")
+
+    success_count, updated_count, skipped_count = sync_users_with_xui()
+
+    bot.send_message(
+        message.chat.id,
+        f"✅ <b>Синхронизация завершена!</b>\n\n"
+        f"Добавлено новых: <b>{success_count}</b>\n"
+        f"Обновлено: <b>{updated_count}</b>\n"
+        f"Пропущено: <b>{skipped_count}</b>",
+        parse_mode="HTML",
+        reply_markup=admin_panel()
+    )
+
+
+def sync_users_with_xui():
+    """
+    Синхронизирует всех клиентов из 3x-ui в users.json
+    """
+    try:
+        # Получаем всех клиентов через новый API
+        r = requests.get(
+            f"{XUI_URL}/panel/api/clients/list",
+            headers=headers,
+            timeout=20
+        )
+
+        if r.status_code != 200 or not r.json().get("success"):
+            print("Ошибка получения списка клиентов")
+            return 0, 0, 0
+
+        clients = r.json().get("obj", [])
+
+        if not os.path.exists("users.json"):
+            users = {}
+        else:
+            with open("users.json", "r", encoding="utf-8") as f:
+                users = json.load(f)
+
+        success_count = 0
+        updated_count = 0
+        skipped_count = 0
+
+        global uid_counter
+        if uid_counter == 1:  # если ещё не инициализирован
+            load_users()
+
+        for client in clients:
+            email = client.get("email")
+            if not email:
+                skipped_count += 1
+                continue
+
+            sub_id = client.get("subId")
+            expiry_time = client.get("expiryTime")
+            tg_id = client.get("tgId")
+            enable = client.get("enable", True)
+
+            # Ищем существующего пользователя по email
+            existing_uid = None
+            for uid_key, data in users.items():
+                if data.get("email") == email:
+                    existing_uid = uid_key
+                    break
+
+            if existing_uid:
+                # Обновляем существующего
+                users[existing_uid].update({
+                    "expiry_time": expiry_time,
+                    "sub_id": sub_id,
+                    "status": "approved" if enable else "disabled"
+                })
+                if tg_id and str(tg_id) != "0":
+                    users[existing_uid]["tg_id"] = str(tg_id)
+                updated_count += 1
+            else:
+                # Создаём нового
+                uid = uid_counter
+                uid_counter += 1
+
+                username = "no_username"
+                # Пытаемся вытащить username из email (если формат uid_username_tgid)
+                parts = email.split("_")
+                if len(parts) > 1:
+                    username = parts[1]
+
+                users[str(uid)] = {
+                    "tg_id": str(tg_id) if tg_id and str(tg_id) != "0" else "by_admin",
+                    "email": email,
+                    "username": username,
+                    "status": "approved" if enable else "disabled",
+                    "expiry_time": expiry_time,
+                    "sub_id": sub_id
+                }
+                success_count += 1
+
+        # Сохраняем
+        with open("users.json", "w", encoding="utf-8") as f:
+            json.dump(users, f, ensure_ascii=False, indent=4)
+
+        print(f"Синхронизация завершена: +{success_count} | обновлено {updated_count}")
+        return success_count, updated_count, skipped_count
+
+    except Exception as e:
+        print(f"Ошибка синхронизации: {e}")
+        return 0, 0, 0
 
 
 
