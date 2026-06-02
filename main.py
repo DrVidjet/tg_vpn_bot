@@ -2050,112 +2050,95 @@ def sync_users_handler(message):
     if not is_admin(message.from_user.id):
         return
 
-    bot.send_message(message.chat.id, "🔄 Запускаю синхронизацию пользователей с 3x-ui...")
-
-    success_count, updated_count, skipped_count = sync_users_with_xui()
-
-    bot.send_message(
+    msg = bot.send_message(
         message.chat.id,
-        f"✅ <b>Синхронизация завершена!</b>\n\n"
-        f"Добавлено новых: <b>{success_count}</b>\n"
-        f"Обновлено: <b>{updated_count}</b>\n"
-        f"Пропущено: <b>{skipped_count}</b>",
+        "🔄 Запускаю синхронизацию привязок клиентов к inbound'ам...\n"
+        "Это может занять время при большом количестве клиентов."
+    )
+
+    attached_count, already_ok_count, error_count = sync_client_inbounds()
+
+    bot.edit_message_text(
+        chat_id=message.chat.id,
+        message_id=msg.message_id,
+        text=f"✅ <b>Синхронизация привязок завершена!</b>\n\n"
+             f"Привязано к новым inbound'ам: <b>{attached_count}</b>\n"
+             f"Уже было в порядке: <b>{already_ok_count}</b>\n"
+             f"Ошибок: <b>{error_count}</b>",
         parse_mode="HTML",
         reply_markup=admin_panel()
     )
 
 
-def sync_users_with_xui():
+def sync_client_inbounds():
     """
-    Синхронизирует всех клиентов из 3x-ui в users.json
+    Проверяет и привязывает всех клиентов к inbound'ам из XUI_INBOUND_IDS
     """
     try:
-        # Получаем всех клиентов через новый API
+        # Получаем всех клиентов
         r = requests.get(
             f"{XUI_URL}/panel/api/clients/list",
             headers=headers,
-            timeout=20
+            timeout=25
         )
 
         if r.status_code != 200 or not r.json().get("success"):
-            print("Ошибка получения списка клиентов")
-            return 0, 0, 0
+            print("❌ Не удалось получить список клиентов")
+            return 0, 0, 1
 
         clients = r.json().get("obj", [])
 
-        if not os.path.exists("users.json"):
-            users = {}
-        else:
-            with open("users.json", "r", encoding="utf-8") as f:
-                users = json.load(f)
+        target_inbounds = set(XUI_INBOUND_IDS)   # например {59, 143, 144, 145}
 
-        success_count = 0
-        updated_count = 0
-        skipped_count = 0
-
-        global uid_counter
-        if uid_counter == 1:  # если ещё не инициализирован
-            load_users()
+        attached_count = 0
+        already_ok_count = 0
+        error_count = 0
 
         for client in clients:
             email = client.get("email")
             if not email:
-                skipped_count += 1
                 continue
 
-            sub_id = client.get("subId")
-            expiry_time = client.get("expiryTime")
-            tg_id = client.get("tgId")
-            enable = client.get("enable", True)
+            # Получаем текущие inbound'ы клиента
+            current_inbounds = set(client.get("inboundIds", []))
 
-            # Ищем существующего пользователя по email
-            existing_uid = None
-            for uid_key, data in users.items():
-                if data.get("email") == email:
-                    existing_uid = uid_key
-                    break
+            # Какие inbound'ы нужно добавить
+            missing = target_inbounds - current_inbounds
 
-            if existing_uid:
-                # Обновляем существующего
-                users[existing_uid].update({
-                    "expiry_time": expiry_time,
-                    "sub_id": sub_id,
-                    "status": "approved" if enable else "disabled"
-                })
-                if tg_id and str(tg_id) != "0":
-                    users[existing_uid]["tg_id"] = str(tg_id)
-                updated_count += 1
-            else:
-                # Создаём нового
-                uid = uid_counter
-                uid_counter += 1
+            if not missing:
+                already_ok_count += 1
+                continue  # уже привязан ко всем нужным
 
-                username = "no_username"
-                # Пытаемся вытащить username из email (если формат uid_username_tgid)
-                parts = email.split("_")
-                if len(parts) > 1:
-                    username = parts[1]
-
-                users[str(uid)] = {
-                    "tg_id": str(tg_id) if tg_id and str(tg_id) != "0" else "by_admin",
-                    "email": email,
-                    "username": username,
-                    "status": "approved" if enable else "disabled",
-                    "expiry_time": expiry_time,
-                    "sub_id": sub_id
+            # Привязываем недостающие inbound'ы
+            try:
+                payload = {
+                    "inboundIds": list(target_inbounds)   # привязываем ко всем целевым
                 }
-                success_count += 1
 
-        # Сохраняем
-        with open("users.json", "w", encoding="utf-8") as f:
-            json.dump(users, f, ensure_ascii=False, indent=4)
+                resp = requests.post(
+                    f"{XUI_URL}/panel/api/clients/{email}/inbounds",
+                    headers=headers,
+                    json=payload,
+                    timeout=15
+                )
 
-        print(f"Синхронизация завершена: +{success_count} | обновлено {updated_count}")
-        return success_count, updated_count, skipped_count
+                if resp.status_code == 200 and resp.json().get("success"):
+                    attached_count += 1
+                    print(f"✅ Привязан {email} → добавил {missing}")
+                else:
+                    print(f"⚠️ Ошибка привязки {email}: {resp.text}")
+                    error_count += 1
+
+            except Exception as e:
+                print(f"❌ Exception при привязке {email}: {e}")
+                error_count += 1
+
+        print(f"Синхронизация завершена. Привязано: {attached_count} | Уже ок: {already_ok_count}")
+        return attached_count, already_ok_count, error_count
 
     except Exception as e:
-        print(f"Ошибка синхронизации: {e}")
-        return 0, 0, 0
+        print(f"Критическая ошибка синхронизации: {e}")
+        return 0, 0, 1
 
 
 
