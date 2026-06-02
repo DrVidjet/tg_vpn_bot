@@ -2111,11 +2111,11 @@ def sync_client_inbounds():
             # Привязываем недостающие inbound'ы
             try:
                 payload = {
-                    "inboundIds": list(target_inbounds)   # привязываем ко всем целевым
+                    "inboundIds": list(target_inbounds)
                 }
 
                 resp = requests.post(
-                    f"{XUI_URL}/panel/api/clients/{email}/inbounds",
+                    f"{XUI_URL}/panel/api/clients/{email}/attach",
                     headers=headers,
                     json=payload,
                     timeout=15
