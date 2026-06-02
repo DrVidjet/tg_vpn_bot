@@ -20,7 +20,6 @@ import traceback
 import random
 import string
 import re
-import gunicorn
 
 # ====================== КОНФИГУРАЦИЯ ======================
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'API.conf')
@@ -2268,7 +2267,7 @@ if __name__ == '__main__':
 
         # Запускаем Flask webhook в отдельном потоке
         def run_flask():
-            gunicorn -w 2 -b 127.0.0.1:5000 app:app
+            app.run(host='127.0.0.1', port=FLASK_PORT, debug=False)
 
         flask_thread = threading.Thread(target=run_flask, daemon=True)
         flask_thread.start()
