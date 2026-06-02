@@ -2065,8 +2065,7 @@ def sync_users_handler(message):
              f"Привязано к новым inbound'ам: <b>{attached_count}</b>\n"
              f"Уже было в порядке: <b>{already_ok_count}</b>\n"
              f"Ошибок: <b>{error_count}</b>",
-        parse_mode="HTML",
-        reply_markup=admin_panel()
+        parse_mode="HTML"
     )
 
 
