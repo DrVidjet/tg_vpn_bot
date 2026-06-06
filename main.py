@@ -568,9 +568,9 @@ def admin_notify(tg_id: int, username: str, email: str, months: int, amount: int
                 ref_username = referrer.get("username", "no_username")
                 ref_email = referrer.get("email", "—")
                 if ref_username:
-                    text += f"🔗 Привёл: @{ref_username} ({ref_email})\n"
+                    text += f"\n🔗 Привёл: @{ref_username} ({ref_email})\n"
                 else:
-                    text += f"🔗 Привёл: {ref_email}\n"
+                    text += f"\n🔗 Привёл: {ref_email}\n"
         except:
             text += f"🔗 Привёл: UID {referrer_uid}\n"
 
