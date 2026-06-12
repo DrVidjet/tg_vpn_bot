@@ -1138,7 +1138,7 @@ def process_successful_payment(tg_id: int, months: int, flow: str = "new", refer
                 f"<code>{ref_code}</code>\n"
                 f"<b>Зовите друзей, получайте по месяцу с каждого!</b>\n\n"
                 "🎉 Добро пожаловать в VidjetVPN!\n\n"
-                "👇 Подписывайтесь на группу, чтобы быть в курсе новостей:\n"
+                "👇 Подписывайтесь на группу, чтобы быть в курсе технических работ, нововведений сервиса и новостей в мире VPN и рунета:\n"
                 f"🏴‍☠{GRUPP}",
                 reply_markup=main_menu()
             )
