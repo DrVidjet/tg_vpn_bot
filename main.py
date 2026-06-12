@@ -574,8 +574,6 @@ def admin_notify(tg_id: int, username: str, email: str, months: int, amount: int
         except:
             text += f"🔗 Привёл: UID {referrer_uid}\n"
 
-    text += f"\nВремя: {datetime.now(ZoneInfo('Europe/Moscow')).strftime('%d.%m.%Y %H:%M')}"
-
     try:
         bot.send_message(ADMIN_ID, text, parse_mode="HTML")
     except Exception as e:
