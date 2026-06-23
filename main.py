@@ -588,7 +588,7 @@ def check_expiring_subscriptions():
             current_time = now.timestamp() * 1000
 
             # Запускаем проверку только в 12:00 ± 2 минуты (чтобы не пропустить)
-            if now.hour == 12 and now.minute < 3:
+            if now.hour == 12 and now.minute == 0:
                 if os.path.exists("users.json"):
                     with open("users.json", "r", encoding="utf-8") as f:
                         users = json.load(f)
