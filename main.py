@@ -582,69 +582,87 @@ def admin_notify(tg_id: int, username: str, email: str, months: int, amount: int
 
 # Уведомления пользователям об истекающих подписках
 def check_expiring_subscriptions():
+    # Первичная настройка при запуске бота: считаем, сколько спать до ближайших 12:00
+    try:
+        now = datetime.now(ZoneInfo("Europe/Moscow"))
+        target_time = now.replace(hour=12, minute=0, second=0, microsecond=0)
+
+        # Если сегодня 12:00 уже прошло, то ближайшая цель — завтрашний день
+        if now >= target_time:
+            target_time += timedelta(days=1)
+
+        seconds_to_wait = (target_time - now).total_seconds()
+        print(f"[LOG] Бот запущен. Первая проверка подписок сработает через {seconds_to_wait / 3600:.2f} ч. (в 12:00 МСК)")
+        time.sleep(seconds_to_wait)
+    except Exception as e:
+        print(f"Ошибка при расчёте первоначального сна: {e}")
+        time.sleep(60)
+
+    # Основной цикл, который теперь срабатывает строго раз в сутки
     while True:
         try:
             now = datetime.now(ZoneInfo("Europe/Moscow"))
             current_time = now.timestamp() * 1000
 
-            # Запускаем проверку только в 12:00 ± 2 минуты (чтобы не пропустить)
-            if now.hour == 12 and now.minute == 0:
-                if os.path.exists("users.json"):
-                    with open("users.json", "r", encoding="utf-8") as f:
-                        users = json.load(f)
+            if os.path.exists("users.json"):
+                with open("users.json", "r", encoding="utf-8") as f:
+                    users = json.load(f)
 
-                    sent_count = 0
-                    print(f"[{now.strftime('%d.%m.%Y %H:%M')}] Запуск ежедневной проверки подписок...")
+                sent_count = 0
+                print(f"[{now.strftime('%d.%m.%Y %H:%M')}] Запуск ежедневной рассылки уведомлений...")
 
-                    for uid_key, data in users.items():
-                        tg_id_raw = data.get("tg_id")
-                        if not tg_id_raw:
-                            continue
+                for uid_key, data in users.items():
+                    tg_id_raw = data.get("tg_id")
+                    if not tg_id_raw:
+                        continue
+                    try:
+                        tg_id = int(tg_id_raw)
+                    except (ValueError, TypeError):
+                        continue
+
+                    expiry = data.get("expiry_time")
+                    if not expiry or expiry == 0:  # бессрочные
+                        continue
+
+                    days_left = (expiry - current_time) / (86400 * 1000)
+                    username = data.get("username", "пользователь")
+
+                    # Проверяем диапазон (3 дня)
+                    if 2.0 < days_left <= 3.0:
                         try:
-                            tg_id = int(tg_id_raw)
-                        except (ValueError, TypeError):
-                            continue
+                            bot.send_message(
+                                tg_id,
+                                "⚠️ <b>Ваша подписка заканчивается через 3 дня!</b>\n\n"
+                                "Не забудьте продлить, чтобы не потерять доступ.",
+                                parse_mode="HTML"
+                            )
+                            print(f"✅ Уведомление отправлено (3 дня): {username} (TG: {tg_id})")
+                            sent_count += 1
+                        except Exception as e:
+                            print(f"Не удалось отправить (3 дня) {tg_id}: {e}")
 
-                        expiry = data.get("expiry_time")
-                        if not expiry or expiry == 0:  # бессрочные
-                            continue
+                    # Проверяем диапазон (последний день)
+                    elif 0.0 < days_left <= 1.0:
+                        try:
+                            bot.send_message(
+                                tg_id,
+                                "❗️ <b>Ваша подписка сегодня заканчивается!</b>\n\n"
+                                "Продлите подписку, чтобы продолжить пользоваться VPN.",
+                                parse_mode="HTML"
+                            )
+                            print(f"✅ Уведомление отправлено (сегодня): {username} (TG: {tg_id})")
+                            sent_count += 1
+                        except Exception as e:
+                            print(f"Не удалось отправить (сегодня) {tg_id}: {e}")
 
-                        days_left = (expiry - current_time) / (86400 * 1000)
-                        username = data.get("username", "пользователь")
-
-                        if 2.5 < days_left < 3.5:   # Через ~3 дня
-                            try:
-                                bot.send_message(
-                                    tg_id,
-                                    "⚠️ <b>Ваша подписка заканчивается через 3 дня!</b>\n\n"
-                                    "Не забудьте продлить, чтобы не потерять доступ.",
-                                    parse_mode="HTML"
-                                )
-                                print(f"✅ Уведомление отправлено (3 дня): {username} (TG: {tg_id})")
-                                sent_count += 1
-                            except Exception as e:
-                                print(f"Не удалось отправить (3 дня) {tg_id}: {e}")
-
-                        elif -0.5 < days_left < 1.0:   # Сегодня или завтра
-                            try:
-                                bot.send_message(
-                                    tg_id,
-                                    "❗️ <b>Ваша подписка сегодня заканчивается!</b>\n\n"
-                                    "Продлите подписку, чтобы продолжить пользоваться VPN.",
-                                    parse_mode="HTML"
-                                )
-                                print(f"✅ Уведомление отправлено (сегодня): {username} (TG: {tg_id})")
-                                sent_count += 1
-                            except Exception as e:
-                                print(f"Не удалось отправить (сегодня) {tg_id}: {e}")
-
-                    print(f"Проверка завершена. Отправлено: {sent_count} уведомлений.")
-
-            time.sleep(60)  # проверяем каждую минуту
+                print(f"Рассылка завершена. Отправлено: {sent_count} уведомлений.")
 
         except Exception as e:
-            print(f"Ошибка проверки истекающих подписок: {e}")
-            time.sleep(300)
+            print(f"Ошибка в блоке рассылки: {e}")
+
+        # Спим ровно 24 часа до следующих 12:00
+        # (86400 секунд = 24 часа)
+        time.sleep(86400)
 
 
 
