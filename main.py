@@ -186,6 +186,16 @@ def renew_vpn_client(uid: int, tg_id: str = None, username: str = None, months: 
         if "id" in client and isinstance(client["id"], (int, float)):
             client["id"] = str(client["id"])
 
+        raw_ips = client.get("allowedIPs")
+        if raw_ips is None or raw_ips == "":
+            client["allowedIPs"] = []
+        elif isinstance(raw_ips, str):
+            try:
+                parsed = json.loads(raw_ips)
+                client["allowedIPs"] = parsed if isinstance(parsed, list) else [raw_ips]
+            except json.JSONDecodeError:
+                client["allowedIPs"] = [x.strip() for x in raw_ips.split(",") if x.strip()]
+
         extra_days = XUI_EXPIRY_DAYS * months
 
         if months == 0:
