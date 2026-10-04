@@ -2167,7 +2167,7 @@ def sync_client_inbounds():
                     f"{XUI_URL}/panel/api/clients/{email}/attach",
                     headers=headers,
                     json=payload,
-                    timeout=60
+                    timeout=15
                 )
 
                 if resp.status_code == 200 and resp.json().get("success"):
