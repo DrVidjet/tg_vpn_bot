@@ -2148,7 +2148,7 @@ def sync_client_inbounds():
                 continue
 
             # Получаем текущие inbound'ы клиента
-            current_inbounds = set(client.get("inboundIds", []))
+            current_inbounds = set(client.get("inboundIds") or [])
 
             # Какие inbound'ы нужно добавить
             missing = target_inbounds - current_inbounds
@@ -2167,7 +2167,7 @@ def sync_client_inbounds():
                     f"{XUI_URL}/panel/api/clients/{email}/attach",
                     headers=headers,
                     json=payload,
-                    timeout=15
+                    timeout=60
                 )
 
                 if resp.status_code == 200 and resp.json().get("success"):
