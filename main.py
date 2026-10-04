@@ -1536,6 +1536,12 @@ def users_filter_callback(call):
         bot.answer_callback_query(call.id, "Нет доступа")
         return
 
+    # Отвечаем сразу, пока запрос не протух
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception as e:
+        print(f"answer_callback_query: {e}")
+
     filter_type = call.data.split(":")[1]
 
     try:
@@ -1543,14 +1549,8 @@ def users_filter_callback(call):
     except:
         pass
 
-    if filter_type == "all":
-        show_users_list(call.message, "all")
-    elif filter_type == "limited":
-        show_users_list(call.message, "limited")
-    elif filter_type == "unlimited":
-        show_users_list(call.message, "unlimited")
-
-    bot.answer_callback_query(call.id)
+    if filter_type in ("all", "limited", "unlimited"):
+        show_users_list(call.message, filter_type)
 
 def show_users_list(message, filter_type="all"):
     if not os.path.exists("users.json"):
