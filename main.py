@@ -208,6 +208,7 @@ def renew_vpn_client(uid: int, tg_id: str = None, username: str = None, months: 
             new_expiry = base_time + extra_days * 24 * 60 * 60 * 1000
 
         client["expiryTime"] = new_expiry
+        client["enable"] = True
 
         r = requests.post(
             f"{XUI_URL}/panel/api/clients/update/{base_email}",
@@ -888,6 +889,7 @@ def give_referral_bonus(referrer_uid: str, new_user_uid: str, months: int = 1):
                         if "id" in client and isinstance(client["id"], (int, float)):
                             client["id"] = str(client["id"])
                         client["expiryTime"] = new_expiry
+                        client["enable"] = True
                         requests.post(f"{XUI_URL}/panel/api/clients/update/{email}", headers=headers, json=client, timeout=10)
                 except:
                     pass
@@ -2099,13 +2101,24 @@ def sync_client_inbounds():
     """
     Проверяет и привязывает всех клиентов к inbound'ам из XUI_INBOUND_IDS
     """
+    def sync_client_inbounds():
+    """
+    Проверяет и привязывает всех клиентов к inbound'ам из XUI_INBOUND_IDS
+    """
     try:
         # Получаем всех клиентов
-        r = requests.get(
-            f"{XUI_URL}/panel/api/clients/list",
-            headers=headers,
-            timeout=25
-        )
+        t0 = time.time()
+        try:
+            r = requests.get(
+                f"{XUI_URL}/panel/api/clients/list",
+                headers=headers,
+                timeout=25
+            )
+        except Exception as e:
+            print(f"❌ clients/list: исключение через {time.time()-t0:.1f}с: {repr(e)}")
+            return 0, 0, 1
+
+        print(f"clients/list: HTTP {r.status_code} за {time.time()-t0:.1f}с, тело: {r.text[:300]}")
 
         if r.status_code != 200 or not r.json().get("success"):
             print("❌ Не удалось получить список клиентов")
