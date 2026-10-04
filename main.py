@@ -2101,10 +2101,6 @@ def sync_client_inbounds():
     """
     Проверяет и привязывает всех клиентов к inbound'ам из XUI_INBOUND_IDS
     """
-    def sync_client_inbounds():
-    """
-    Проверяет и привязывает всех клиентов к inbound'ам из XUI_INBOUND_IDS
-    """
     try:
         # Получаем всех клиентов
         t0 = time.time()
