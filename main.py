@@ -2096,31 +2096,45 @@ def sync_users_handler(message):
         parse_mode="HTML"
     )
 
+def fetch_all_clients(page_size=50, max_pages=200):
+    """Забирает всех клиентов постранично через /clients/list/paged"""
+    clients = []
+    page = 1
+    while page <= max_pages:
+        t0 = time.time()
+        r = requests.get(
+            f"{XUI_URL}/panel/api/clients/list/paged",
+            headers=headers,
+            params={"page": page, "size": page_size},
+            timeout=60
+        )
+        data = r.json()
+        print(f"clients/list/paged: страница {page}, HTTP {r.status_code}, {time.time()-t0:.1f}с")
+
+        if r.status_code != 200 or not data.get("success"):
+            raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
+
+        obj = data.get("obj") or {}
+        items = obj.get("items") or []
+        clients.extend(items)
+
+        total = obj.get("total", 0)
+        if not items or len(clients) >= total:
+            break
+        page += 1
+
+    return clients
 
 def sync_client_inbounds():
     """
     Проверяет и привязывает всех клиентов к inbound'ам из XUI_INBOUND_IDS
     """
     try:
-        # Получаем всех клиентов
-        t0 = time.time()
         try:
-            r = requests.get(
-                f"{XUI_URL}/panel/api/clients/list",
-                headers=headers,
-                timeout=25
-            )
+            clients = fetch_all_clients()
         except Exception as e:
-            print(f"❌ clients/list: исключение через {time.time()-t0:.1f}с: {repr(e)}")
+            print(f"❌ Не удалось получить список клиентов: {repr(e)}")
             return 0, 0, 1
-
-        print(f"clients/list: HTTP {r.status_code} за {time.time()-t0:.1f}с, тело: {r.text[:300]}")
-
-        if r.status_code != 200 or not r.json().get("success"):
-            print("❌ Не удалось получить список клиентов")
-            return 0, 0, 1
-
-        clients = r.json().get("obj", [])
 
         target_inbounds = set(XUI_INBOUND_IDS)   # например {59, 143, 144, 145}
 
