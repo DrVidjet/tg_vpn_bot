@@ -150,12 +150,48 @@ def create_vpn_client(uid: int, tg_id: str = None, username: str = None, months:
 
 
 
+# Привязка клиента к недостающим inbound'ам из XUI_INBOUND_IDS
+def ensure_client_inbounds(base_email: str):
+    """Возвращает (ok, error_text). Привязывает только недостающие inbound'ы."""
+    try:
+        r = requests.get(
+            f"{XUI_URL}/panel/api/clients/get/{base_email}",
+            headers=headers,
+            timeout=15
+        )
+        data = r.json()
+        if not data.get("success"):
+            return False, f"get: {data.get('msg', '')}"
+
+        current = set(data["obj"].get("inboundIds") or [])
+        missing = set(XUI_INBOUND_IDS) - current
+
+        if not missing:
+            return True, ""
+
+        resp = requests.post(
+            f"{XUI_URL}/panel/api/clients/{base_email}/attach",
+            headers=headers,
+            json={"inboundIds": list(missing)},
+            timeout=30
+        )
+        res = resp.json()
+        if resp.status_code == 200 and res.get("success"):
+            print(f"✅ Привязан {base_email} → добавил {missing}")
+            return True, ""
+
+        return False, res.get("msg", resp.text[:300])
+
+    except Exception as e:
+        return False, repr(e)
+
 # Продление клиента в 3x-ui
 def renew_vpn_client(uid: int, tg_id: str = None, username: str = None, months: int = 1):
     try:
         with open("users.json", "r", encoding="utf-8") as f:
             users = json.load(f)
 
+        user_data = None
         if tg_id and str(tg_id) != "by_admin":
             _, user_data = get_user_by_tg_id(tg_id)
         elif uid:
@@ -221,6 +257,22 @@ def renew_vpn_client(uid: int, tg_id: str = None, username: str = None, months: 
 
         if not result.get("success"):
             return False, result.get("msg"), base_email, None
+
+        # Возвращаем клиента на нужные inbound'ы (панель отвязывает исчерпанных)
+        attach_ok, attach_err = ensure_client_inbounds(base_email)
+        if not attach_ok:
+            print(f"⚠️ Не удалось привязать inbound'ы после продления {base_email}: {attach_err}")
+            try:
+                bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ Продление прошло, но не удалось привязать inbound'ы\n"
+                    f"Email: <code>{base_email}</code>\n"
+                    f"Ошибка: <code>{attach_err[:300]}</code>\n\n"
+                    f"Запустите «🔄 Синхронизировать пользователей» или привяжите вручную.",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
 
         if str(uid) in users:
             users[str(uid)]["expiry_time"] = new_expiry
@@ -2141,10 +2193,16 @@ def sync_client_inbounds():
         attached_count = 0
         already_ok_count = 0
         error_count = 0
+        skipped_count = 0
 
         for client in clients:
             email = client.get("email")
             if not email:
+                continue
+            now_ms = int(time.time() * 1000)
+            expiry = client.get("expiryTime") or 0
+            if client.get("enable") is False or (0 < expiry < now_ms):
+                skipped_count += 1
                 continue
 
             # Получаем текущие inbound'ы клиента
@@ -2181,7 +2239,7 @@ def sync_client_inbounds():
                 print(f"❌ Exception при привязке {email}: {e}")
                 error_count += 1
 
-        print(f"Синхронизация завершена. Привязано: {attached_count} | Уже ок: {already_ok_count}")
+        print(f"Синхронизация завершена. Привязано: {attached_count} | Уже ок: {already_ok_count} | Пропущено: {skipped_count}")
         return attached_count, already_ok_count, error_count
 
     except Exception as e:
