@@ -303,21 +303,97 @@ def _xui_email_path(email) -> str:
 
 SLOW_REQUEST_SEC = 5
 
+# [FIX] Таймаут на TCP-подключение + TLS-рукопожатие. В urllib3 перед рукопожатием
+# (_validate_conn) выставляется conn.timeout = connect_timeout, поэтому при timeout=60
+# повисшее рукопожатие ждало все 60 секунд. Теперь рвём через 10 и повторяем.
+XUI_CONNECT_TIMEOUT = 10
+XUI_RETRY_DELAYS = (2, 4)          # пауза перед 2-й и 3-й попыткой
+_XUI_RETRY_STATUSES = (502, 503, 504)
 
-def _xui_call(method: str, path: str, **kwargs):
+_xui_local = threading.local()
+
+
+def _xui_session() -> requests.Session:
     """
-    Запрос к 3x-ui с замером времени. Медленные ответы (≥ SLOW_REQUEST_SEC) пишутся
-    в лог предупреждением — по ним видно, где тормозит панель или ноды.
+    [FIX] Одна keep-alive сессия на поток. Раньше каждый requests.get/post открывал новое
+    TCP+TLS-соединение — синхронизация 43 клиентов делала >100 рукопожатий, и любое из них
+    могло повиснуть. Теперь соединение переиспользуется.
+    Отдельная сессия на поток — потому что requests.Session не гарантирует потокобезопасность.
     """
-    t0 = time.monotonic()
-    try:
-        return getattr(requests, method.lower())(f"{XUI_URL}{path}", headers=headers, **kwargs)
-    finally:
-        elapsed = time.monotonic() - t0
-        if elapsed >= SLOW_REQUEST_SEC:
-            log.warning("3x-ui %s %s — медленный ответ: %.1f с", method.upper(), path, elapsed)
+    session = getattr(_xui_local, "session", None)
+    if session is None:
+        session = requests.Session()
+        session.headers.update(headers)
+        adapter = requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=2, max_retries=0)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        _xui_local.session = session
+    return session
+
+
+def _xui_reset_session():
+    session = getattr(_xui_local, "session", None)
+    _xui_local.session = None
+    if session is not None:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
+def _xui_call(method: str, path: str, *, timeout=30, retries=len(XUI_RETRY_DELAYS), **kwargs):
+    """
+    Запрос к 3x-ui: keep-alive сессия, раздельные таймауты (подключение/ответ),
+    повторы при сетевых сбоях и 502/503/504, замер времени.
+
+    Повторять безопасно: все вызовы через эту функцию идемпотентны по исходникам 3x-ui
+    (get/list — чтение, update — полная замена полей, attach пропускает уже привязанные
+    inbound'ы, del при повторе вернёт «not found», который обрабатывается как успех).
+    Единственный неидемпотентный вызов — clients/add — идёт с retries=0.
+    """
+    url = f"{XUI_URL}{path}"
+    attempts = 1 + max(0, retries)
+    started = time.monotonic()
+
+    for attempt in range(1, attempts + 1):
+        t0 = time.monotonic()
+        try:
+            resp = _xui_session().request(
+                method.upper(), url, timeout=(XUI_CONNECT_TIMEOUT, timeout), **kwargs
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            elapsed = time.monotonic() - t0
+            # Соединение могло остаться в непонятном состоянии — следующая попытка с нуля
+            _xui_reset_session()
+            reason = f"{type(e).__name__}: {str(e)[:200]}"
+            if attempt >= attempts:
+                if attempts == 1:
+                    log.error("3x-ui %s %s: запрос не удался за %.1f с — %s",
+                              method.upper(), path, elapsed, reason)
+                else:
+                    log.error("3x-ui %s %s: все %d попытки не удались (последняя за %.1f с) — %s",
+                              method.upper(), path, attempts, elapsed, reason)
+                raise
+            delay = XUI_RETRY_DELAYS[min(attempt - 1, len(XUI_RETRY_DELAYS) - 1)]
+            log.warning("3x-ui %s %s: попытка %d/%d не удалась за %.1f с (%s), повтор через %g с",
+                        method.upper(), path, attempt, attempts, elapsed, reason, delay)
+            time.sleep(delay)
+            continue
+
+        if resp.status_code in _XUI_RETRY_STATUSES and attempt < attempts:
+            delay = XUI_RETRY_DELAYS[min(attempt - 1, len(XUI_RETRY_DELAYS) - 1)]
+            log.warning("3x-ui %s %s: HTTP %d, попытка %d/%d, повтор через %g с",
+                        method.upper(), path, resp.status_code, attempt, attempts, delay)
+            time.sleep(delay)
+            continue
+
+        total = time.monotonic() - started
+        if total >= SLOW_REQUEST_SEC:
+            log.warning("3x-ui %s %s — медленный ответ: %.1f с (попыток: %d)",
+                        method.upper(), path, total, attempt)
         else:
-            log.debug("3x-ui %s %s — %.2f с", method.upper(), path, elapsed)
+            log.debug("3x-ui %s %s — %.2f с", method.upper(), path, total)
+        return resp
 
 
 def _xui_json(resp) -> dict:
@@ -547,12 +623,8 @@ def create_vpn_client(uid: int, tg_id: str = None, username: str = None, months:
     }
 
     try:
-        r = requests.post(
-            f"{XUI_URL}/panel/api/clients/add",
-            headers=headers,
-            json=payload,
-            timeout=20
-        )
+        # add не идемпотентен — без автоматических повторов (retries=0)
+        r = _xui_call("POST", "/panel/api/clients/add", json=payload, timeout=30, retries=0)
         data = _xui_json(r)
 
         if r.status_code == 200 and data.get("success"):
@@ -564,6 +636,14 @@ def create_vpn_client(uid: int, tg_id: str = None, username: str = None, months:
             return False, error, base_name, expiry_ms, sub_id
 
     except Exception as e:
+        # [FIX] Сетевой сбой не значит, что клиент не создан: запрос мог дойти до панели,
+        # а потеряться ответ. Проверяем (GET с повторами), прежде чем сообщать об ошибке —
+        # иначе оплативший пользователь получил бы «Ошибка активации» при живом клиенте.
+        log.warning(f"Сбой при создании клиента {base_name}: {e!r} — проверяю, создан ли он")
+        exists, obj = xui_get_client(base_name)
+        if exists:
+            log.info(f"✅ Клиент {base_name} всё-таки создан (ответ панели потерялся)")
+            return True, "", base_name, expiry_ms, (obj.get("client") or {}).get("subId") or sub_id
         log.exception(f"❌ Exception при создании клиента: {e}")
         return False, str(e), base_name, expiry_ms, sub_id
 
@@ -1947,11 +2027,7 @@ def show_users_list(message, filter_type="all"):
 # Запрос онлайн клиентов у сервера
 def get_online_clients():
     try:
-        r = requests.post(
-            f"{XUI_URL}/panel/api/clients/onlines",
-            headers=headers,
-            timeout=15
-        )
+        r = _xui_call("POST", "/panel/api/clients/onlines", timeout=15)
         data = _xui_json(r)
         if r.status_code == 200 and data.get("success"):
             return set(data.get("obj") or [])
@@ -1966,11 +2042,7 @@ def get_all_users_traffic():
     traffic = {}
 
     try:
-        r = requests.get(
-            f"{XUI_URL}/panel/api/inbounds/list",
-            headers=headers,
-            timeout=15
-        )
+        r = _xui_call("GET", "/panel/api/inbounds/list", timeout=30)
         data = _xui_json(r)
 
         if r.status_code != 200 or not data.get("success"):
@@ -2335,11 +2407,7 @@ def delete_vpn_user_by_uid(uid: int):
         return False, "Email не найден"
 
     try:
-        r = requests.post(
-            f"{XUI_URL}/panel/api/clients/del/{_xui_email_path(email)}",
-            headers=headers,
-            timeout=15
-        )
+        r = _xui_call("POST", f"/panel/api/clients/del/{_xui_email_path(email)}", timeout=30)
         data = _xui_json(r)
 
         panel_ok = r.status_code == 200 and data.get("success")
@@ -2384,7 +2452,7 @@ def get_servers_status():
 
     # ==================== CENTRAL SERVER ====================
     try:
-        r = requests.get(f"{XUI_URL}/panel/api/server/status", headers=headers, timeout=15)
+        r = _xui_call("GET", "/panel/api/server/status", timeout=15)
         data = _xui_json(r)
 
         if r.status_code == 200 and data.get("success"):
@@ -2424,7 +2492,7 @@ def get_servers_status():
 
     # ==================== NODES ====================
     try:
-        r = requests.get(f"{XUI_URL}/panel/api/nodes/list", headers=headers, timeout=15)
+        r = _xui_call("GET", "/panel/api/nodes/list", timeout=15)
         data = _xui_json(r)
 
         if r.status_code != 200 or not data.get("success"):
