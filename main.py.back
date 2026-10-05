@@ -20,8 +20,6 @@ import traceback
 import random
 import string
 import re
-import html
-from urllib.parse import quote
 
 # ====================== КОНФИГУРАЦИЯ ======================
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'API.conf')
@@ -67,14 +65,6 @@ XUI_SUB_LINK = config.get('3XUI', 'XUI_SUB_LINK').strip('"')
 XUI_EXPIRY_DAYS = config.getint('3XUI', 'XUI_EXPIRY_DAYS', fallback=31)
 XUI_CLIENT_LIMIT_IP = config.getint('3XUI', 'XUI_CLIENT_LIMIT_IP', fallback=3)
 
-# [FIX] Flow для VLESS-клиентов. Раньше был зашит только в create_vpn_client,
-# а при апдейтах подставлялось то, что вернул GET (а он может вернуть "").
-# Параметр НЕОБЯЗАТЕЛЬНЫЙ: без него в API.conf используется xtls-rprx-vision.
-# Пустое значение (XUI_CLIENT_FLOW = "") — бот вообще не трогает flow.
-# Панель сама вырезает flow на inbound'ах, где он не поддерживается
-# (clientWithInboundFlow в исходниках 3x-ui), поэтому слать его на все inbound'ы безопасно.
-XUI_CLIENT_FLOW = config.get('3XUI', 'XUI_CLIENT_FLOW', fallback='xtls-rprx-vision').strip().strip('"')
-
 headers = {
     "Authorization": f"Bearer {XUI_API_TOKEN}",
     "Accept": "application/json",
@@ -86,10 +76,8 @@ bot = telebot.TeleBot(API_TOKEN,
                       parse_mode=None,
                       disable_web_page_preview=False)
 
-# [FIX] Убран bot.enable_save_next_step_handlers(delay=2).
-# Это НЕ таймауты: метод включает FileHandlerBackend, который каждые 2 секунды
-# пиклит next-step хендлеры в ./.handler-saves/step.save. Без load_next_step_handlers()
-# при старте эти сохранения никогда не читались — была только лишняя запись на диск.
+# Увеличиваем таймауты
+bot.enable_save_next_step_handlers(delay=2)
 
 # ====================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ======================
 pending_requests = {}
@@ -100,13 +88,6 @@ admin_given_email = None
 admin_given_username = None
 admin_renew_uid = 0
 
-# [FIX] users.json читают/пишут одновременно: пул потоков telebot (num_threads=2 по умолчанию),
-# поток Flask с вебхуком и поток рассылки. Без блокировки возможны потерянные записи
-# (один поток прочитал файл, второй записал, первый затёр его своей старой копией).
-USERS_FILE = "users.json"
-USERS_LOCK = threading.RLock()
-SYNC_LOCK = threading.Lock()
-
 
 
 # =======================================================
@@ -115,259 +96,7 @@ SYNC_LOCK = threading.Lock()
 
 
 
-# ====================== users.json (потокобезопасно) =======================
-
-def load_users_db() -> dict:
-    with USERS_LOCK:
-        if not os.path.exists(USERS_FILE):
-            return {}
-        with open(USERS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-
-
-def save_users_db(data: dict):
-    # Атомарная запись: сначала во временный файл, потом rename.
-    # Если процесс упадёт посреди записи, users.json не окажется обрезанным.
-    with USERS_LOCK:
-        tmp_path = USERS_FILE + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, USERS_FILE)
-
-
-def update_user_record(uid, **fields) -> bool:
-    """Перечитывает users.json под блокировкой и меняет только переданные поля."""
-    with USERS_LOCK:
-        users = load_users_db()
-        record = users.get(str(uid))
-        if record is None:
-            return False
-        record.update(fields)
-        save_users_db(users)
-        return True
-
-
-
 # ====================== Работа с 3x-ui =======================
-#
-# Всё ниже сверено с исходниками 3x-ui v3 (internal/web/controller/client.go,
-# internal/web/service/client_crud.go, client_lookup.go):
-#
-# * GET  /panel/api/clients/get/{email} возвращает {"client": ClientRecord, "inboundIds": [...]}.
-#   В ClientRecord поле "id" — это ПЕРВИЧНЫЙ КЛЮЧ записи в БД (int), а VLESS-UUID лежит в "uuid".
-#   Поле "flow" — это EffectiveFlow: flow первого inbound'а, где он не пустой; если клиент ни к
-#   одному flow-совместимому inbound'у не привязан — придёт "".
-# * POST /panel/api/clients/update/{email} принимает model.Client, где "id" — это VLESS-UUID.
-#   Это полная замена полей (не частичный патч): что не передано — обнуляется
-#   (кроме id/password/auth/secret — их панель сохраняет, если они пустые).
-# * POST /panel/api/clients/{email}/attach берёт flow не из тела запроса, а из EffectiveFlow.
-#   Уже привязанные inbound'ы пропускаются без ошибки.
-
-def _xui_email_path(email) -> str:
-    return quote(str(email), safe="")
-
-
-def _xui_json(resp) -> dict:
-    try:
-        data = resp.json()
-        return data if isinstance(data, dict) else {"success": False, "msg": str(data)[:300]}
-    except ValueError:
-        return {"success": False, "msg": f"HTTP {resp.status_code}: {resp.text[:300]}"}
-
-
-def xui_get_client(email):
-    """(True, {"client": {...}, "inboundIds": [...]}) или (False, текст ошибки)."""
-    try:
-        r = requests.get(
-            f"{XUI_URL}/panel/api/clients/get/{_xui_email_path(email)}",
-            headers=headers,
-            timeout=15
-        )
-        data = _xui_json(r)
-        if r.status_code == 200 and data.get("success") and isinstance(data.get("obj"), dict):
-            return True, data["obj"]
-        return False, data.get("msg") or f"HTTP {r.status_code}"
-    except Exception as e:
-        return False, repr(e)
-
-
-def xui_attach(email, inbound_ids):
-    try:
-        r = requests.post(
-            f"{XUI_URL}/panel/api/clients/{_xui_email_path(email)}/attach",
-            headers=headers,
-            json={"inboundIds": list(inbound_ids)},
-            timeout=30
-        )
-        data = _xui_json(r)
-        if r.status_code == 200 and data.get("success"):
-            return True, ""
-        return False, data.get("msg") or f"HTTP {r.status_code}"
-    except Exception as e:
-        return False, repr(e)
-
-
-def xui_update_client(email, payload: dict):
-    try:
-        r = requests.post(
-            f"{XUI_URL}/panel/api/clients/update/{_xui_email_path(email)}",
-            headers=headers,
-            json=payload,
-            timeout=30
-        )
-        data = _xui_json(r)
-        if r.status_code == 200 and data.get("success"):
-            return True, ""
-        return False, data.get("msg") or f"HTTP {r.status_code}"
-    except Exception as e:
-        return False, repr(e)
-
-
-def _is_valid_uuid(value) -> bool:
-    try:
-        return str(uuid.UUID(str(value))) == str(value).lower()
-    except (ValueError, TypeError, AttributeError):
-        return False
-
-
-# Поля ClientRecord, которые нельзя (или не нужно) отправлять в update как есть
-_RECORD_ONLY_KEYS = ("id", "uuid", "createdAt", "updatedAt", "allowedIPs", "reverse")
-
-
-def _client_payload_from_record(rec: dict) -> dict:
-    """
-    [FIX] Превращает ClientRecord (ответ GET) в model.Client (тело update).
-
-    Главное: раньше бот делал client["id"] = str(client["id"]) — то есть отправлял
-    первичный ключ из БД ("17") в поле, которое панель считает VLESS-UUID.
-    Панель честно записывала UUID = "17". Теперь в "id" кладётся настоящий "uuid".
-    Остальные поля передаются как есть (update — полная замена, нельзя их терять:
-    limitHwid, group, comment, reset* и т.д.).
-    """
-    payload = {k: v for k, v in rec.items() if k not in _RECORD_ONLY_KEYS}
-
-    vless_uuid = rec.get("uuid")
-    if vless_uuid:
-        payload["id"] = vless_uuid
-
-    # В ClientRecord allowedIPs — строка, в model.Client — массив строк.
-    # Пустую строку не шлём (иначе ошибка разбора JSON), для WireGuard панель
-    # сама подставит сохранённое значение.
-    raw_ips = rec.get("allowedIPs")
-    ips = []
-    if isinstance(raw_ips, list):
-        ips = [str(x) for x in raw_ips if x]
-    elif isinstance(raw_ips, str) and raw_ips.strip():
-        try:
-            parsed = json.loads(raw_ips)
-            ips = parsed if isinstance(parsed, list) else [raw_ips]
-        except json.JSONDecodeError:
-            ips = [x.strip() for x in raw_ips.split(",") if x.strip()]
-    if ips:
-        payload["allowedIPs"] = ips
-
-    if isinstance(rec.get("reverse"), dict):
-        payload["reverse"] = rec["reverse"]
-
-    return payload
-
-
-def xui_apply_client_state(email, *, expiry_ms=None, enable=None, tg_id=None,
-                           ensure_inbounds=True, regenerate_uuid=False, prefetched=None):
-    """
-    [FIX] Единая точка изменения клиента в 3x-ui.
-    Возвращает (ok, error_text, attach_error_text).
-
-    Порядок важен:
-      1. attach недостающих inbound'ов из XUI_INBOUND_IDS;
-      2. update с явно заданными flow / enable / expiryTime.
-    Update применяется только к inbound'ам, привязанным на момент вызова, а attach
-    берёт flow из EffectiveFlow (у полностью отвязанного клиента он пустой).
-    Поэтому сначала привязываем, потом одним update выставляем flow и enable
-    сразу на всех inbound'ах, включая только что привязанные.
-    """
-    if prefetched is None:
-        ok, obj = xui_get_client(email)
-        if not ok:
-            return False, f"get: {obj}", ""
-    else:
-        obj = prefetched
-
-    rec = obj.get("client") or {}
-    attach_err = ""
-
-    if ensure_inbounds:
-        missing = sorted(set(XUI_INBOUND_IDS) - set(obj.get("inboundIds") or []))
-        if missing:
-            ok, err = xui_attach(email, missing)
-            if ok:
-                print(f"✅ Привязан {email} → добавил {missing}")
-            else:
-                attach_err = err
-                print(f"⚠️ Не удалось привязать {email} к {missing}: {err}")
-
-    payload = _client_payload_from_record(rec)
-    if XUI_CLIENT_FLOW:
-        payload["flow"] = XUI_CLIENT_FLOW
-    if expiry_ms is not None:
-        payload["expiryTime"] = int(expiry_ms)
-    if enable is not None:
-        payload["enable"] = bool(enable)
-    if tg_id is not None:
-        payload["tgId"] = int(tg_id)
-    if regenerate_uuid:
-        payload["id"] = str(uuid.uuid4())
-
-    ok, err = xui_update_client(email, payload)
-    if not ok:
-        return False, f"update: {err}", attach_err
-    return True, "", attach_err
-
-
-def _calc_new_expiry(current_expiry, months: int) -> int:
-    if months == 0:
-        return 0
-    now_ms = int(datetime.now().timestamp() * 1000)
-    try:
-        current = int(current_expiry or 0)
-    except (TypeError, ValueError):
-        current = 0
-    base_time = current if current > now_ms else now_ms
-    return base_time + XUI_EXPIRY_DAYS * months * 24 * 60 * 60 * 1000
-
-
-def xui_extend_client(email, months: int):
-    """Продлевает клиента от текущей даты в панели. (ok, err, new_expiry, attach_err)"""
-    ok, obj = xui_get_client(email)
-    if not ok:
-        return False, f"Client not found: {obj}", None, ""
-
-    rec = obj.get("client") or {}
-    new_expiry = _calc_new_expiry(rec.get("expiryTime"), months)
-
-    ok, err, attach_err = xui_apply_client_state(
-        email, expiry_ms=new_expiry, enable=True, prefetched=obj
-    )
-    if not ok:
-        return False, err, None, attach_err
-    return True, "", new_expiry, attach_err
-
-
-def notify_admin_attach_problem(email, attach_err, context="Продление"):
-    try:
-        bot.send_message(
-            ADMIN_ID,
-            f"⚠️ {html.escape(context)} прошло, но не удалось привязать inbound'ы\n"
-            f"Email: <code>{html.escape(str(email))}</code>\n"
-            f"Ошибка: <code>{html.escape(str(attach_err)[:300])}</code>\n\n"
-            f"Запустите «🔄 Синхронизировать пользователей» или привяжите вручную.",
-            parse_mode="HTML"
-        )
-    except Exception:
-        pass
-
 
 # Создание клиента в 3x-ui
 def create_vpn_client(uid: int, tg_id: str = None, username: str = None, months: int = 1):
@@ -391,7 +120,7 @@ def create_vpn_client(uid: int, tg_id: str = None, username: str = None, months:
         "expiryTime": expiry_ms,
         "enable": True,
         "tgId": int(tg_id) if tg_id != "by_admin" else 0,
-        "flow": XUI_CLIENT_FLOW,
+        "flow": "xtls-rprx-vision",
     }
 
     payload = {
@@ -406,13 +135,12 @@ def create_vpn_client(uid: int, tg_id: str = None, username: str = None, months:
             json=payload,
             timeout=20
         )
-        data = _xui_json(r)
 
-        if r.status_code == 200 and data.get("success"):
+        if r.status_code == 200 and r.json().get("success"):
             print(f"✅ Клиент создан: {base_name} | Прикреплён к {len(XUI_INBOUND_IDS)} inbound'ам")
             return True, "", base_name, expiry_ms, sub_id
         else:
-            error = data.get("msg") or r.text
+            error = r.json().get("msg", r.text)
             print(f"❌ Ошибка создания клиента: {error}")
             return False, error, base_name, expiry_ms, sub_id
 
@@ -422,17 +150,52 @@ def create_vpn_client(uid: int, tg_id: str = None, username: str = None, months:
 
 
 
+# Привязка клиента к недостающим inbound'ам из XUI_INBOUND_IDS
+def ensure_client_inbounds(base_email: str):
+    """Возвращает (ok, error_text). Привязывает только недостающие inbound'ы."""
+    try:
+        r = requests.get(
+            f"{XUI_URL}/panel/api/clients/get/{base_email}",
+            headers=headers,
+            timeout=15
+        )
+        data = r.json()
+        if not data.get("success"):
+            return False, f"get: {data.get('msg', '')}"
+
+        current = set(data["obj"].get("inboundIds") or [])
+        missing = set(XUI_INBOUND_IDS) - current
+
+        if not missing:
+            return True, ""
+
+        resp = requests.post(
+            f"{XUI_URL}/panel/api/clients/{base_email}/attach",
+            headers=headers,
+            json={"inboundIds": list(missing)},
+            timeout=30
+        )
+        res = resp.json()
+        if resp.status_code == 200 and res.get("success"):
+            print(f"✅ Привязан {base_email} → добавил {missing}")
+            return True, ""
+
+        return False, res.get("msg", resp.text[:300])
+
+    except Exception as e:
+        return False, repr(e)
+
 # Продление клиента в 3x-ui
 def renew_vpn_client(uid: int, tg_id: str = None, username: str = None, months: int = 1):
     try:
-        users = load_users_db()
+        with open("users.json", "r", encoding="utf-8") as f:
+            users = json.load(f)
 
-        # [FIX] Сначала ищем по uid (он однозначен), потом по tg_id
-        uid_key, user_data = None, None
-        if uid and str(uid) in users:
-            uid_key, user_data = str(uid), users[str(uid)]
-        elif tg_id and str(tg_id) != "by_admin":
-            uid_key, user_data = get_user_by_tg_id(tg_id)
+        user_data = None
+        if tg_id and str(tg_id) != "by_admin":
+            _, user_data = get_user_by_tg_id(tg_id)
+        elif uid:
+            user_data = users.get(str(uid))
 
         if not user_data or not user_data.get("email"):
             error = f"Email пользователя не найден (uid={uid}, tg_id={tg_id})"
@@ -441,17 +204,83 @@ def renew_vpn_client(uid: int, tg_id: str = None, username: str = None, months: 
 
         base_email = user_data["email"]
 
-        ok, err, new_expiry, attach_err = xui_extend_client(base_email, months)
-        if not ok:
-            print(f"❌ Ошибка продления {base_email}: {err}")
-            return False, err, base_email, None
+        r = requests.get(
+            f"{XUI_URL}/panel/api/clients/get/{base_email}",
+            headers=headers,
+            timeout=15
+        )
 
-        if attach_err:
-            notify_admin_attach_problem(base_email, attach_err)
+        data = r.json()
 
-        update_user_record(uid_key, expiry_time=new_expiry)
+        if not data.get("success"):
+            error = f"Client not found: {data.get('msg', '')}"
+            print(f"❌ {error}")
+            return False, error, None, None
+
+        client = data["obj"]["client"]
+
+        if "id" in client and isinstance(client["id"], (int, float)):
+            client["id"] = str(client["id"])
+
+        raw_ips = client.get("allowedIPs")
+        if raw_ips is None or raw_ips == "":
+            client["allowedIPs"] = []
+        elif isinstance(raw_ips, str):
+            try:
+                parsed = json.loads(raw_ips)
+                client["allowedIPs"] = parsed if isinstance(parsed, list) else [raw_ips]
+            except json.JSONDecodeError:
+                client["allowedIPs"] = [x.strip() for x in raw_ips.split(",") if x.strip()]
+
+        extra_days = XUI_EXPIRY_DAYS * months
+
+        if months == 0:
+            new_expiry = 0
+        else:
+            now_ms = int(datetime.now().timestamp() * 1000)
+            current_expiry = client.get("expiryTime", 0)
+
+            base_time = current_expiry if current_expiry > now_ms else now_ms
+            new_expiry = base_time + extra_days * 24 * 60 * 60 * 1000
+
+        client["expiryTime"] = new_expiry
+        client["enable"] = True
+
+        r = requests.post(
+            f"{XUI_URL}/panel/api/clients/update/{base_email}",
+            headers=headers,
+            json=client,
+            timeout=15
+        )
+
+        result = r.json()
+
+        if not result.get("success"):
+            return False, result.get("msg"), base_email, None
+
+        # Возвращаем клиента на нужные inbound'ы (панель отвязывает исчерпанных)
+        attach_ok, attach_err = ensure_client_inbounds(base_email)
+        if not attach_ok:
+            print(f"⚠️ Не удалось привязать inbound'ы после продления {base_email}: {attach_err}")
+            try:
+                bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ Продление прошло, но не удалось привязать inbound'ы\n"
+                    f"Email: <code>{base_email}</code>\n"
+                    f"Ошибка: <code>{attach_err[:300]}</code>\n\n"
+                    f"Запустите «🔄 Синхронизировать пользователей» или привяжите вручную.",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
+        if str(uid) in users:
+            users[str(uid)]["expiry_time"] = new_expiry
+            with open("users.json", "w", encoding="utf-8") as f:
+                json.dump(users, f, ensure_ascii=False, indent=4)
 
         print(f"✅ Подписка продлена: {base_email} → {new_expiry}")
+
         return True, "", base_email, new_expiry
 
     except Exception as e:
@@ -463,7 +292,9 @@ def renew_vpn_client(uid: int, tg_id: str = None, username: str = None, months: 
 # Обновление tg_id после привязки пользователя
 def update_tg_id(uid: str, tg_id: int, username: str = "no_username"):
     try:
-        users = load_users_db()
+        with open("users.json", "r", encoding="utf-8") as f:
+            users = json.load(f)
+
         user_data = users.get(str(uid))
         if not user_data:
             return False, "User not found"
@@ -472,13 +303,35 @@ def update_tg_id(uid: str, tg_id: int, username: str = "no_username"):
         if not base_email:
             return False, "Email not found"
 
-        # Обновляем в 3x-ui (через общий хелпер: правильный UUID и flow)
-        ok, err, _ = xui_apply_client_state(base_email, tg_id=int(tg_id), ensure_inbounds=False)
-        if not ok:
-            print(f"⚠️ Не удалось обновить tgId в 3x-ui: {err}")
+        # Обновляем в 3x-ui
+        r = requests.get(
+            f"{XUI_URL}/panel/api/clients/get/{base_email}",
+            headers=headers,
+            timeout=15
+        )
+
+        if r.json().get("success"):
+            client = r.json()["obj"]["client"]
+            if "id" in client and isinstance(client.get("id"), (int, float)):
+                client["id"] = str(client["id"])
+            client["tgId"] = int(tg_id)
+
+            update_resp = requests.post(
+                f"{XUI_URL}/panel/api/clients/update/{base_email}",
+                headers=headers,
+                json=client,
+                timeout=15
+            )
+
+            if not update_resp.json().get("success"):
+                print(f"⚠️ Не удалось обновить tgId в 3x-ui: {update_resp.text}")
 
         # Обновляем в users.json
-        update_user_record(uid, tg_id=str(tg_id), username=username)
+        users[str(uid)]["tg_id"] = str(tg_id)
+        users[str(uid)]["username"] = username
+
+        with open("users.json", "w", encoding="utf-8") as f:
+            json.dump(users, f, ensure_ascii=False, indent=4)
 
         print(f"✅ tg_id успешно обновлён для UID {uid} → {tg_id}")
         return True, None
@@ -495,69 +348,72 @@ def update_tg_id(uid: str, tg_id: int, username: str = "no_username"):
 def get_or_create_uid(tg_id=None):
     global uid_counter
 
-    with USERS_LOCK:
-        users = load_users_db()
+    if os.path.exists("users.json"):
+        with open("users.json", "r", encoding="utf-8") as f:
+            users = json.load(f)
+    else:
+        users = {}
 
-        # Ищем существующего пользователя по tg_id
-        if tg_id is not None:
-            for uid, data in users.items():
-                if str(data.get("tg_id")) == str(tg_id):
-                    return int(uid)
+    # Ищем существующего пользователя по tg_id
+    if tg_id is not None:
+        for uid, data in users.items():
+            if str(data.get("tg_id")) == str(tg_id):
+                return int(uid)
 
-        # [FIX] Создаём нового под блокировкой: два одновременных платежа
-        # (Flask многопоточный) раньше могли получить один и тот же uid.
-        max_uid = max((int(k) for k in users if str(k).isdigit()), default=0)
-        uid = max(uid_counter, max_uid + 1)
-        uid_counter = uid + 1
+    # Создаем нового
+    uid = uid_counter
+    uid_counter += 1
 
-        return uid
+    return uid
 
 
 
 # Сохранение нового пользователя в файл
 def save_user(uid, tg_id, email=None, username=None, status="approved", expiry_time=None, sub_id=None, referral_code=None):
-    with USERS_LOCK:
-        data = load_users_db()
+    if os.path.exists("users.json"):
+        with open("users.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+    else:
+        data = {}
 
-        key = str(uid)
+    key = str(uid)
 
-        if key in data:
-            current = data[key]
-            if tg_id:
-                current["tg_id"] = tg_id
-            if email:
-                current["email"] = email
-            if username and username != "no_username":
-                current["username"] = username
-            current["status"] = status
-            if expiry_time:
-                current["expiry_time"] = expiry_time
-            if sub_id:
-                current["sub_id"] = sub_id
-            if referral_code:
-                current["referral_code"] = referral_code
-            # [FIX] возвращаем реальный код существующего пользователя, а не None
-            referral_code = current.get("referral_code")
+    if key in data:
+        current = data[key]
+        if tg_id:
+            current["tg_id"] = tg_id
+        if email:
+            current["email"] = email
+        if username and username != "no_username":
+            current["username"] = username
+        current["status"] = status
+        if expiry_time:
+            current["expiry_time"] = expiry_time
+        if sub_id:
+            current["sub_id"] = sub_id
+        if referral_code:
+            current["referral_code"] = referral_code
 
-        else:
-            # Новый пользователь
-            if expiry_time is None:
-                expiry_time = int((datetime.now() + timedelta(days=XUI_EXPIRY_DAYS)).timestamp() * 1000)
+    else:
+        # Новый пользователь
+        if expiry_time is None:
+            expiry_time = int((datetime.now() + timedelta(days=XUI_EXPIRY_DAYS)).timestamp() * 1000)
 
-            if not referral_code:
-                referral_code = generate_referral_code()
+        if not referral_code:
+            referral_code = generate_referral_code()
 
-            data[key] = {
-                "tg_id": tg_id or "by_admin",
-                "email": email,
-                "username": username or "no_username",
-                "status": status,
-                "expiry_time": expiry_time,
-                "sub_id": sub_id,
-                "referral_code": referral_code
-            }
+        data[key] = {
+            "tg_id": tg_id or "by_admin",
+            "email": email,
+            "username": username or "no_username",
+            "status": status,
+            "expiry_time": expiry_time,
+            "sub_id": sub_id,
+            "referral_code": referral_code
+        }
 
-        save_users_db(data)
+    with open("users.json", "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
 
     return referral_code
 
@@ -574,11 +430,6 @@ def acquire_lock():
         print("Bot already running!")
         sys.exit(1)
     return lock_file
-
-
-
-def norm_username(user) -> str:
-    return (getattr(user, "username", None) or "no_username").lower().replace("@", "")
 
 
 
@@ -623,10 +474,12 @@ def safe_send_message(chat_id, text, parse_mode="HTML", reply_markup=None, max_r
 # Функция подгрузки tg пользователей
 def load_users():
     global user_ids, uid_counter
-    data = load_users_db()
-    if not data:
+    if not os.path.exists("users.json"):
         uid_counter = 1
         return
+
+    with open("users.json", "r", encoding="utf-8") as f:
+        data = json.load(f)
 
     max_uid = 0
     for key, info in data.items():
@@ -644,8 +497,13 @@ def load_users():
 
 # Поиск пользователя по tg_id
 def get_user_by_tg_id(tg_id):
+    if not os.path.exists("users.json"):
+        return None, None
+
     tg_id = str(tg_id)  # приводим к строке
-    users = load_users_db()
+
+    with open("users.json", "r", encoding="utf-8") as f:
+        users = json.load(f)
 
     for uid_key, user_data in users.items():
         saved_tg = user_data.get("tg_id")
@@ -658,15 +516,16 @@ def get_user_by_tg_id(tg_id):
 
 # Поиск пользователя по username
 def get_user_by_username(username):
-    username = (username or "").lower().replace("@", "").strip()
-    if not username:
+    if not os.path.exists("users.json"):
         return None, None
 
-    users = load_users_db()
+    username = username.lower().replace("@", "").strip()
+
+    with open("users.json", "r", encoding="utf-8") as f:
+        users = json.load(f)
 
     for uid_key, user_data in users.items():
-        # [FIX] username может оказаться null в users.json → .lower() падал
-        saved_username = (user_data.get("username") or "").lower().replace("@", "").strip()
+        saved_username = user_data.get("username", "").lower().replace("@", "").strip()
         if saved_username == username:
             return uid_key, user_data
 
@@ -674,20 +533,12 @@ def get_user_by_username(username):
 
 
 
-# Привязка tg_id к пользователю, которого админ добавил по username
-def link_admin_added_user(user):
-    username = norm_username(user)
-    if username == "no_username":
-        return
-    uid_by_name, user_by_name = get_user_by_username(username)
-    if user_by_name and user_by_name.get("status") == "approved" and user_by_name.get("tg_id") == "by_admin":
-        update_tg_id(uid_by_name, user.id, username)
-
-
-
 # Информация о подписке
 def sub(tg_id, message=None):
     try:
+        with open("users.json", "r", encoding="utf-8") as f:
+            users = json.load(f)
+
         uid, user_data = get_user_by_tg_id(tg_id)
 
         if not user_data:
@@ -733,15 +584,13 @@ def sub(tg_id, message=None):
 
 # Обработка продления на несколько месяцев
 def process_months_input(message, tg_id, flow = "new"):
-    if step_interrupted(message):
-        return
     try:
-        months = int((message.text or "").strip())
+        months = int(message.text.strip())
         if months < 1 or months > 12:
             msg = bot.send_message(tg_id, "❌ Простите, мы пока не оформляем подписки дольше чем на год. Введите другое число месяцев.")
             bot.register_next_step_handler(msg, process_months_input, tg_id, flow)
             return
-        username = norm_username(message.from_user)
+        username = (message.from_user.username or "no_username").lower().replace("@", "")
         if flow == "renew":
             send_invoice(tg_id, username, months, flow)
         else:
@@ -751,15 +600,13 @@ def process_months_input(message, tg_id, flow = "new"):
         # Если ввели не число
         msg = bot.send_message(
             tg_id,
-            "❌ Пожалуйста, введите <b>число</b> (например: 3)",
+            "❌ Пожалуйста, введите **число** (например: 3)",
             parse_mode="HTML"
         )
         bot.register_next_step_handler(msg, process_months_input, tg_id, flow)
 
     except Exception as e:
-        print(f"Ошибка process_months_input: {e}")
-        msg = bot.send_message(tg_id, "❌ Введите корректное число")
-        bot.register_next_step_handler(msg, process_months_input, tg_id, flow)
+        bot.send_message(tg_id, "❌ Введите корректное число")
 
 
 
@@ -767,8 +614,8 @@ def process_months_input(message, tg_id, flow = "new"):
 def admin_notify(tg_id: int, username: str, email: str, months: int, amount: int, payment_type: str, referrer_uid: str = None):
     text = (
         f"💰 <b>Новая оплата</b>\n\n"
-        f"Пользователь: @{html.escape(str(username))} ({tg_id})\n"
-        f"Email: <code>{html.escape(str(email))}</code>\n"
+        f"Пользователь: @{username} ({tg_id})\n"
+        f"Email: <code>{email}</code>\n"
         f"Тип: {payment_type}\n"
         f"Месяцев: {months}\n"
         f"Сумма: {amount // 100} ₽\n\n"
@@ -777,17 +624,18 @@ def admin_notify(tg_id: int, username: str, email: str, months: int, amount: int
 
     if referrer_uid:
         try:
-            users = load_users_db()
+            with open("users.json", "r", encoding="utf-8") as f:
+                users = json.load(f)
             referrer = users.get(str(referrer_uid))
             if referrer:
                 ref_username = referrer.get("username", "no_username")
-                ref_email = html.escape(str(referrer.get("email", "—")))
+                ref_email = referrer.get("email", "—")
                 if ref_username:
-                    text += f"\n🔗 Привёл: @{html.escape(str(ref_username))} ({ref_email})\n"
+                    text += f"\n🔗 Привёл: @{ref_username} ({ref_email})\n"
                 else:
                     text += f"\n🔗 Привёл: {ref_email}\n"
         except:
-            text += f"\n🔗 Привёл: UID {referrer_uid}\n"
+            text += f"🔗 Привёл: UID {referrer_uid}\n"
 
     try:
         bot.send_message(ADMIN_ID, text, parse_mode="HTML")
@@ -796,87 +644,88 @@ def admin_notify(tg_id: int, username: str, email: str, months: int, amount: int
 
 
 # Уведомления пользователям об истекающих подписках
-def _seconds_until_next_noon_msk() -> float:
-    now = datetime.now(ZoneInfo("Europe/Moscow"))
-    target_time = now.replace(hour=12, minute=0, second=0, microsecond=0)
-    # Если сегодня 12:00 уже прошло, то ближайшая цель — завтрашний день
-    if now >= target_time:
-        target_time += timedelta(days=1)
-    return (target_time - now).total_seconds()
-
-
-def notify_expiring_users():
-    now = datetime.now(ZoneInfo("Europe/Moscow"))
-    current_time = now.timestamp() * 1000
-
-    users = load_users_db()
-    if not users:
-        return
-
-    sent_count = 0
-    print(f"[{now.strftime('%d.%m.%Y %H:%M')}] Запуск ежедневной рассылки уведомлений...")
-
-    for uid_key, data in users.items():
-        tg_id_raw = data.get("tg_id")
-        if not tg_id_raw:
-            continue
-        try:
-            tg_id = int(tg_id_raw)
-        except (ValueError, TypeError):
-            continue
-
-        expiry = data.get("expiry_time")
-        if not expiry or expiry == 0:  # бессрочные
-            continue
-
-        days_left = (expiry - current_time) / (86400 * 1000)
-        username = data.get("username", "пользователь")
-
-        # Проверяем диапазон (3 дня)
-        if 2.0 < days_left <= 3.0:
-            try:
-                bot.send_message(
-                    tg_id,
-                    "⚠️ <b>Ваша подписка заканчивается через 3 дня!</b>\n\n"
-                    "Не забудьте продлить, чтобы не потерять доступ.",
-                    parse_mode="HTML"
-                )
-                print(f"✅ Уведомление отправлено (3 дня): {username} (TG: {tg_id})")
-                sent_count += 1
-            except Exception as e:
-                print(f"Не удалось отправить (3 дня) {tg_id}: {e}")
-
-        # Проверяем диапазон (последний день)
-        elif 0.0 < days_left <= 1.0:
-            try:
-                bot.send_message(
-                    tg_id,
-                    "❗️ <b>Ваша подписка сегодня заканчивается!</b>\n\n"
-                    "Продлите подписку, чтобы продолжить пользоваться VPN.",
-                    parse_mode="HTML"
-                )
-                print(f"✅ Уведомление отправлено (сегодня): {username} (TG: {tg_id})")
-                sent_count += 1
-            except Exception as e:
-                print(f"Не удалось отправить (сегодня) {tg_id}: {e}")
-
-    print(f"Рассылка завершена. Отправлено: {sent_count} уведомлений.")
-
-
 def check_expiring_subscriptions():
-    # [FIX] Раньше после первой рассылки делался sleep(86400), и время рассылки
-    # «уплывало» на длительность самой рассылки каждый день. Теперь каждый раз
-    # заново считаем, сколько спать до ближайших 12:00 МСК.
+    # Первичная настройка при запуске бота: считаем, сколько спать до ближайших 12:00
+    try:
+        now = datetime.now(ZoneInfo("Europe/Moscow"))
+        target_time = now.replace(hour=12, minute=0, second=0, microsecond=0)
+
+        # Если сегодня 12:00 уже прошло, то ближайшая цель — завтрашний день
+        if now >= target_time:
+            target_time += timedelta(days=1)
+
+        seconds_to_wait = (target_time - now).total_seconds()
+        print(f"[LOG] Бот запущен. Первая проверка подписок сработает через {seconds_to_wait / 3600:.2f} ч. (в 12:00 МСК)")
+        time.sleep(seconds_to_wait)
+    except Exception as e:
+        print(f"Ошибка при расчёте первоначального сна: {e}")
+        time.sleep(60)
+
+    # Основной цикл, который теперь срабатывает строго раз в сутки
     while True:
         try:
-            seconds_to_wait = _seconds_until_next_noon_msk()
-            print(f"[LOG] Следующая проверка подписок через {seconds_to_wait / 3600:.2f} ч. (в 12:00 МСК)")
-            time.sleep(seconds_to_wait)
-            notify_expiring_users()
+            now = datetime.now(ZoneInfo("Europe/Moscow"))
+            current_time = now.timestamp() * 1000
+
+            if os.path.exists("users.json"):
+                with open("users.json", "r", encoding="utf-8") as f:
+                    users = json.load(f)
+
+                sent_count = 0
+                print(f"[{now.strftime('%d.%m.%Y %H:%M')}] Запуск ежедневной рассылки уведомлений...")
+
+                for uid_key, data in users.items():
+                    tg_id_raw = data.get("tg_id")
+                    if not tg_id_raw:
+                        continue
+                    try:
+                        tg_id = int(tg_id_raw)
+                    except (ValueError, TypeError):
+                        continue
+
+                    expiry = data.get("expiry_time")
+                    if not expiry or expiry == 0:  # бессрочные
+                        continue
+
+                    days_left = (expiry - current_time) / (86400 * 1000)
+                    username = data.get("username", "пользователь")
+
+                    # Проверяем диапазон (3 дня)
+                    if 2.0 < days_left <= 3.0:
+                        try:
+                            bot.send_message(
+                                tg_id,
+                                "⚠️ <b>Ваша подписка заканчивается через 3 дня!</b>\n\n"
+                                "Не забудьте продлить, чтобы не потерять доступ.",
+                                parse_mode="HTML"
+                            )
+                            print(f"✅ Уведомление отправлено (3 дня): {username} (TG: {tg_id})")
+                            sent_count += 1
+                        except Exception as e:
+                            print(f"Не удалось отправить (3 дня) {tg_id}: {e}")
+
+                    # Проверяем диапазон (последний день)
+                    elif 0.0 < days_left <= 1.0:
+                        try:
+                            bot.send_message(
+                                tg_id,
+                                "❗️ <b>Ваша подписка сегодня заканчивается!</b>\n\n"
+                                "Продлите подписку, чтобы продолжить пользоваться VPN.",
+                                parse_mode="HTML"
+                            )
+                            print(f"✅ Уведомление отправлено (сегодня): {username} (TG: {tg_id})")
+                            sent_count += 1
+                        except Exception as e:
+                            print(f"Не удалось отправить (сегодня) {tg_id}: {e}")
+
+                print(f"Рассылка завершена. Отправлено: {sent_count} уведомлений.")
+
         except Exception as e:
             print(f"Ошибка в блоке рассылки: {e}")
-        # Защита от двойного срабатывания, если sleep проснулся чуть раньше 12:00:00
-        time.sleep(60)
+
+        # Спим ровно 24 часа до следующих 12:00
+        # (86400 секунд = 24 часа)
+        time.sleep(86400)
 
 
 
@@ -901,32 +750,14 @@ def device_ru():
 
 # ====================== Кнопки/меню/вопросы =======================
 
-USER_MENU_BUTTONS = (
-    "📦 Моя подписка",
-    "🎟 Рефералка",
-    "🔄 Продлить подписку",
-    "📑 Инструкция",
-    "📩 Поддержка",
-)
-
-ADMIN_MENU_BUTTONS = (
-    "👥 Пользователи",
-    "➕ Добавить пользователя",
-    "🔄 Продлить пользователя",
-    "🗑 Удалить пользователя",
-    "🖥 Статус серверов",
-    "🔄 Синхронизировать пользователей",
-    "📊 Отчет по оплатам",
-)
-
-MENU_BUTTONS = set(USER_MENU_BUTTONS) | set(ADMIN_MENU_BUTTONS)
-
-
 # Главное меню пользователя
 def main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    for button in USER_MENU_BUTTONS:
-        markup.add(button)
+    markup.add("📦 Моя подписка")
+    markup.add("🎟 Рефералка")
+    markup.add("🔄 Продлить подписку")
+    markup.add("📑 Инструкция")
+    markup.add("📩 Поддержка")
     return markup
 
 
@@ -934,27 +765,16 @@ def main_menu():
 # Главное меню админа
 def admin_panel():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    for button in ADMIN_MENU_BUTTONS:
-        markup.add(button)
+
+    markup.add("👥 Пользователи")
+    markup.add("➕ Добавить пользователя")
+    markup.add("🔄 Продлить пользователя")
+    markup.add("🗑 Удалить пользователя")
+    markup.add("🖥 Статус серверов")
+    markup.add("🔄 Синхронизировать пользователей")
+    markup.add("📊 Отчет по оплатам")
+
     return markup
-
-
-
-def step_interrupted(message) -> bool:
-    """
-    [FIX] telebot сначала отдаёт сообщение next-step хендлеру и забирает его из обработки
-    (TeleBot._notify_next_handlers → new_messages.pop), обычные message_handler'ы его уже не видят.
-    Поэтому если пользователь посреди диалога нажимал кнопку меню, кнопка «съедалась»
-    вопросом «введите число» и он застревал в цикле. Здесь: если пришла кнопка меню или
-    команда — выходим из диалога и прогоняем сообщение через обычные хендлеры.
-    Для не-текстовых сообщений (стикер, фото) message.text = None — тоже не падаем.
-    """
-    text = (message.text or "").strip()
-    if text.startswith("/") or text in MENU_BUTTONS:
-        bot.clear_step_handler_by_chat_id(message.chat.id)
-        bot.process_new_messages([message])
-        return True
-    return False
 
 
 
@@ -1072,12 +892,18 @@ def generate_referral_code(length=8):
             return code
 
 def is_referral_code_exists(code: str) -> bool:
-    users = load_users_db()
+    if not os.path.exists("users.json"):
+        return False
+    with open("users.json", "r", encoding="utf-8") as f:
+        users = json.load(f)
     return any(user.get("referral_code") == code for user in users.values())
 
 # Поиск пользователя по реферальному коду
 def find_user_by_referral_code(code: str):
-    users = load_users_db()
+    if not os.path.exists("users.json"):
+        return None, None
+    with open("users.json", "r", encoding="utf-8") as f:
+        users = json.load(f)
     for uid, data in users.items():
         if data.get("referral_code") == code.upper():
             return uid, data
@@ -1086,57 +912,54 @@ def find_user_by_referral_code(code: str):
 # Реферальный бонус
 def give_referral_bonus(referrer_uid: str, new_user_uid: str, months: int = 1):
     try:
-        if not referrer_uid or str(referrer_uid) == str(new_user_uid):
-            return
+        with open("users.json", "r", encoding="utf-8") as f:
+            users = json.load(f)
 
-        users = load_users_db()
-        referrer = users.get(str(referrer_uid))
-        if not referrer:
-            return
+        if referrer_uid and referrer_uid in users:
+            referrer = users[referrer_uid]
 
-        # Проверка: не даём бонус бессрочным пользователям
-        if referrer.get("expiry_time") == 0:
-            print(f"ℹ️ Реферер UID {referrer_uid} имеет бессрочную подписку — бонус не выдан")
-            return
+            # Проверка: не даём бонус бессрочным пользователям
+            if referrer.get("expiry_time") == 0:
+                print(f"ℹ️ Реферер UID {referrer_uid} имеет бессрочную подписку — бонус не выдан")
+                return
 
-        email = referrer.get("email")
-        if not email:
-            return
+            current_expiry = referrer.get("expiry_time", 0)
+            now_ms = int(datetime.now().timestamp() * 1000)
+            base_time = current_expiry if current_expiry > now_ms else now_ms
+            bonus_ms = XUI_EXPIRY_DAYS * months * 24 * 60 * 60 * 1000
+            new_expiry = base_time + bonus_ms
 
-        # [FIX] Раньше: дата бралась из users.json, клиент в панели обновлялся «вслепую»
-        # (except: pass), к inbound'ам не привязывался и UUID портился.
-        # Теперь тот же путь, что и обычное продление.
-        ok, err, new_expiry, attach_err = xui_extend_client(email, months)
-        if not ok:
-            print(f"❌ Не удалось начислить реферальный бонус {email}: {err}")
-            try:
-                bot.send_message(
-                    ADMIN_ID,
-                    f"⚠️ Не удалось начислить реферальный бонус\n"
-                    f"Реферер UID: {referrer_uid}\nEmail: <code>{html.escape(str(email))}</code>\n"
-                    f"Ошибка: <code>{html.escape(str(err)[:300])}</code>",
-                    parse_mode="HTML"
-                )
-            except Exception:
-                pass
-            return
+            referrer["expiry_time"] = new_expiry
 
-        if attach_err:
-            notify_admin_attach_problem(email, attach_err, context="Реферальный бонус")
+            # Обновляем в 3x-ui
+            email = referrer.get("email")
+            if email:
+                try:
+                    r = requests.get(f"{XUI_URL}/panel/api/clients/get/{email}", headers=headers, timeout=10)
+                    if r.json().get("success"):
+                        client = r.json()["obj"]["client"]
+                        if "id" in client and isinstance(client["id"], (int, float)):
+                            client["id"] = str(client["id"])
+                        client["expiryTime"] = new_expiry
+                        client["enable"] = True
+                        requests.post(f"{XUI_URL}/panel/api/clients/update/{email}", headers=headers, json=client, timeout=10)
+                except:
+                    pass
 
-        update_user_record(referrer_uid, expiry_time=new_expiry)
+            with open("users.json", "w", encoding="utf-8") as f:
+                json.dump(users, f, ensure_ascii=False, indent=4)
 
-        # Уведомляем реферера
-        tg_id = referrer.get("tg_id")
-        if tg_id and tg_id != "by_admin":
-            try:
-                bot.send_message(int(tg_id),
-                    "🎉 <b>Реферальный бонус!</b>\n\n"
-                    f"Ваш друг активировал подписку по вашей рефералке.\n"
-                    f"Вам добавлен +{months} {months_word(months)} к подписке!",
-                    parse_mode="HTML")
-            except:
-                pass
+            # Уведомляем реферера
+            tg_id = referrer.get("tg_id")
+            if tg_id and tg_id != "by_admin":
+                try:
+                    bot.send_message(int(tg_id),
+                        "🎉 <b>Реферальный бонус!</b>\n\n"
+                        f"Ваш друг активировал подписку по вашей рефералке.\n"
+                        f"Вам добавлен +1 месяц к подписке!",
+                        parse_mode="HTML")
+                except:
+                    pass
 
     except Exception as e:
         print(f"Ошибка выдачи реферального бонуса: {e}")
@@ -1152,69 +975,66 @@ def give_referral_bonus(referrer_uid: str, new_user_uid: str, months: int = 1):
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     tg_id = message.from_user.id
+    username = (message.from_user.username or "no_username").lower().replace("@", "")
+    loading_msg = bot.send_message(message.chat.id, "⌛", reply_markup=types.ReplyKeyboardRemove())
 
-    # /start всегда сбрасывает незаконченный диалог
-    bot.clear_step_handler_by_chat_id(message.chat.id)
 
     # Получаем полный текст команды (включая параметр)
     full_text = message.text.strip() if message.text else ""
 
     # === ВОЗВРАТ ПОСЛЕ ОПЛАТЫ YOOKASSA ===
     if "payment_" in full_text:
-        # Возврат по return_url ещё не означает, что оплата прошла — честно об этом говорим
+        safe_send_message(tg_id, "✅ Платёж получен. Обрабатываем...")
+
+        # Если webhook уже успел обработать — показываем меню
         if tg_id not in pending_requests:
             bot.send_message(tg_id, "🎉 Подписка уже активирована!", reply_markup=main_menu())
         else:
-            bot.send_message(tg_id, "⏳ Ожидаем подтверждение оплаты от YooKassa...", reply_markup=main_menu())
+            bot.send_message(tg_id, "⏳ Ожидаем подтверждение от YooKassa...", reply_markup=main_menu())
         return
 
-    show_start(message.chat.id, message.from_user)
-
-
-def show_start(chat_id, user):
-    """[FIX] Логика /start вынесена в функцию, чтобы не собирать фейковый types.Message в cancel_payment."""
-    tg_id = user.id
-
+    # === ОБЫЧНЫЙ ЗАПУСК ===
     try:
         # 1. Ищем по tg_id
         uid, user_data = get_user_by_tg_id(tg_id)
 
         if user_data and user_data.get("status") == "approved":
-            bot.send_message(chat_id, "Добро пожаловать 👇", reply_markup=main_menu())
+            try:
+                bot.delete_message(message.chat.id, loading_msg.message_id)
+            except:
+                pass
+            bot.send_message(message.chat.id, "Добро пожаловать 👇", reply_markup=main_menu())
             return
 
         # 2. Ищем по username (пользователь добавлен админом)
-        username = norm_username(user)
-        if username != "no_username":
+        if username and username != "no_username":
             uid_by_name, user_by_name = get_user_by_username(username)
             if user_by_name and user_by_name.get("status") == "approved" and user_by_name.get("tg_id") == "by_admin":
 
                 # Обновляем tgId
                 update_tg_id(uid_by_name, tg_id, username)
 
-                bot.send_message(chat_id, "Добро пожаловать 👇", reply_markup=main_menu())
+                try:
+                    bot.delete_message(message.chat.id, loading_msg.message_id)
+                except:
+                    pass
+                bot.send_message(message.chat.id, "Добро пожаловать 👇", reply_markup=main_menu())
                 return
 
     except Exception as e:
-        print(f"Ошибка в show_start: {e}")
+        print(f"Ошибка в start_handler: {e}")
 
-    # Пользователь в процессе оплаты.
-    # [FIX] Раньше тут был тупик «🕚 Жду подтверждения» навсегда (до рестарта бота),
-    # если человек открыл счёт и передумал. Теперь даём кнопку отмены.
+    # Пользователь в процессе оплаты
     if tg_id in pending_requests:
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("❌ Отменить оплату", callback_data="cancel_payment"))
-        bot.send_message(
-            chat_id,
-            "🕚 Ждём подтверждения оплаты.\n\n"
-            "Если вы уже оплатили — подписка активируется автоматически в течение пары минут.\n"
-            "Если передумали — отмените оплату и начните заново.",
-            reply_markup=markup
-        )
+        try:
+            bot.delete_message(message.chat.id, loading_msg.message_id)
+        except:
+            pass
+        bot.send_message(message.chat.id, "🕚 Жду подтверждения")
         return
 
     # Новый пользователь
-    ask_vpn_offer(chat_id)
+    ask_vpn_offer(message.chat.id)
 
 
 
@@ -1231,7 +1051,7 @@ def ask_vpn_offer(chat_id):
         "• Без ограничений по трафику\n"
         "• Высокая скорость соединения\n"
         "• Стабильная работа\n"
-        f"• {XUI_CLIENT_LIMIT_IP} {device_ru()} на одной подписке\n"
+        "• 3 устройства на одной подписке\n"
         "• Демократичная цена\n"
         "• Система скидок\n"
         "• Реферальная система\n"
@@ -1240,11 +1060,11 @@ def ask_vpn_offer(chat_id):
         "📦 <b>После оплаты вы получите:</b>\n"
         "• Конфиг для подключения\n"
         "• Пошаговую инструкцию\n"
-        f"• И использование одной подписки на {XUI_CLIENT_LIMIT_IP} {device_ru()}!\n\n"
+        "• И использование одной подписки на 3 устройствах!\n\n"
         "💰 <b>Цена:</b>\n"
         f"{PRICE_PER_MONTH}₽ / месяц\n"
-        f"{get_price_per_month(FIRST_DISCOUNT_COUNT_MONTH)}₽ / от {FIRST_DISCOUNT_COUNT_MONTH} {months_word(FIRST_DISCOUNT_COUNT_MONTH)}\n"
-        f"{get_price_per_month(SECOND_DISCOUNT_COUNT_MONTH)}₽ / от {SECOND_DISCOUNT_COUNT_MONTH} {months_word(SECOND_DISCOUNT_COUNT_MONTH)}\n\n"
+        f"{get_price_per_month(3)}₽ / от трёх месяцев\n"
+        f"{get_price_per_month(8)}₽ / от восьми месяцев\n\n"
         "❓ <b>Оформляем?</b>",
         parse_mode="HTML",
         reply_markup=markup
@@ -1255,10 +1075,7 @@ def ask_vpn_offer(chat_id):
 def handle_pay_choice(call):
     tg_id = call.from_user.id
     action = call.data.split(":")[1]
-    username = norm_username(call.from_user)
-
-    bot.answer_callback_query(call.id)
-    bot.clear_step_handler_by_chat_id(call.message.chat.id)
+    username = (call.from_user.username or "no_username").lower().replace("@", "")
 
     try:
         bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -1268,11 +1085,12 @@ def handle_pay_choice(call):
     if action == "1":
         ask_referral_before_payment(tg_id, username, months=1, flow="new")
     elif action == "multi":
-        # [FIX] Убрана преждевременная запись в pending_requests: если человек
-        # не доходил до счёта, /start навсегда показывал «Жду подтверждения».
-        # send_invoice сам создаёт запись, когда счёт реально выставлен.
+        # Инициализируем заранее
+        pending_requests[tg_id] = {"flow": "new", "username": username}
         msg = bot.send_message(tg_id, "📅 Введите количество месяцев (1–12):")
         bot.register_next_step_handler(msg, process_months_input, tg_id, flow="new")
+
+    bot.answer_callback_query(call.id)
 
 # Запрос рефералки
 def ask_referral_before_payment(tg_id, username, months, flow):
@@ -1294,12 +1112,7 @@ def handle_referral_choice(call):
     has_ref = data[0] == "has_ref"
     months = int(data[1])
     flow = data[2]
-    username = norm_username(call.from_user)
-
-    bot.answer_callback_query(call.id)
-    # [FIX] Если человек нажал «Без кода» из сообщения об ошибке, ожидающий ввод кода
-    # хендлер должен быть снят, иначе он съест следующее сообщение пользователя.
-    bot.clear_step_handler_by_chat_id(call.message.chat.id)
+    username = (call.from_user.username or "no_username").lower().replace("@", "")
 
     try:
         bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -1312,24 +1125,15 @@ def handle_referral_choice(call):
     else:
         send_invoice(tg_id, username, months, flow, referral_code=None)
 
-def process_referral_input(message, tg_id, username, months, flow):
-    if step_interrupted(message):
-        return
+    bot.answer_callback_query(call.id)
 
-    code = (message.text or "").strip().upper()
-    referrer_uid, referrer_data = find_user_by_referral_code(code) if code else (None, None)
+def process_referral_input(message, tg_id, username, months, flow):
+    code = message.text.strip().upper()
+    referrer_uid, referrer_data = find_user_by_referral_code(code)
 
     if not referrer_uid:
-        # [FIX] Раньше просили «нажмите «Нет»», но кнопку к этому моменту уже удалили —
-        # пользователь застревал. Даём кнопку продолжить без кода.
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("➡️ Продолжить без кода", callback_data=f"no_ref:{months}:{flow}"))
-        msg = bot.send_message(
-            tg_id,
-            "❌ Реферальный код не найден.\nВведите код ещё раз или продолжите без него.",
-            reply_markup=markup
-        )
-        bot.register_next_step_handler(msg, process_referral_input, tg_id, username, months, flow)
+        bot.send_message(tg_id, "❌ Реферальный код не найден.\nПопробуйте ещё раз или нажмите «Нет».")
+        bot.register_next_step_handler(message, process_referral_input, tg_id, username, months, flow)
         return
 
     # Инициализируем запись, если её ещё нет
@@ -1342,10 +1146,10 @@ def process_referral_input(message, tg_id, username, months, flow):
 
     pending_requests[tg_id]["referrer_uid"] = referrer_uid
 
-    bot.send_message(tg_id, "✅ Реферальный код принят. Переходим к оплате...")
-
     # Теперь можно отправлять счёт
     send_invoice(tg_id, username, months, flow, code)
+
+    bot.send_message(tg_id, "✅ Реферальный код принят. Переходим к оплате...")
 
 
 
@@ -1355,50 +1159,36 @@ def cancel_payment(call):
     tg_id = call.from_user.id
     pending_requests.pop(tg_id, None)
 
-    bot.answer_callback_query(call.id)
-    bot.clear_step_handler_by_chat_id(call.message.chat.id)
-
     try:
         bot.delete_message(call.message.chat.id, call.message.message_id)
     except:
         pass
 
+    # Вызываем /start как будто пользователь нажал старт заново
+    fake_message = types.Message(
+        message_id=0,
+        from_user=call.from_user,
+        chat=call.message.chat,
+        date=datetime.now(),
+        content_type='text',
+        options={},
+        json_string='{"text": "/start"}'
+    )
+    fake_message.text = "/start"
+
     bot.send_message(tg_id, "❌ Оплата отменена.")
 
-    # [FIX] Вместо сборки фейкового types.Message и прямого вызова start_handler
-    show_start(call.message.chat.id, call.from_user)
+    start_handler(fake_message)
 
-
-
-def _lookup_username(tg_id) -> str:
-    """Username из Telegram, если в памяти (pending_requests) его уже нет — например, после рестарта."""
-    try:
-        chat = bot.get_chat(tg_id)
-        if chat and chat.username:
-            return chat.username.lower().replace("@", "")
-    except Exception as e:
-        print(f"Не удалось получить username для {tg_id}: {e}")
-    return "no_username"
 
 
 # Универсальная обработка успешной оплаты
 def process_successful_payment(tg_id: int, months: int, flow: str = "new", referrer_uid: str = None):
     data = pending_requests.get(tg_id, {})
-    # [FIX] pending_requests живёт только в памяти. Если бот перезапускался между
-    # выставлением счёта и вебхуком, раньше получали username=no_username и сумму 0 ₽.
-    username = data.get("username") or _lookup_username(tg_id)
-    amount = (data.get("amount") or get_price_per_month(months) * months) * 100
+    username = data.get("username", "no_username")
+    amount = data.get("amount", 0) * 100
 
     uid = get_or_create_uid(tg_id)
-
-    # [FIX] Если у пользователя уже есть клиент (например, нажал старую кнопку оффера
-    # и оплатил «новую» подписку повторно) — продлеваем, а не создаём дубликат,
-    # который панель всё равно отклонит как Duplicate email.
-    _, existing = get_user_by_tg_id(tg_id)
-    if flow == "new" and existing and existing.get("email"):
-        print(f"ℹ️ tg_id={tg_id} уже имеет клиента {existing.get('email')} — оформляем как продление")
-        flow = "renew"
-        referrer_uid = None
 
     print(f"Обработка платежа: flow={flow}, months={months}, tg_id={tg_id}, uid={uid}")
 
@@ -1443,7 +1233,7 @@ def process_successful_payment(tg_id: int, months: int, flow: str = "new", refer
         if success:
             save_user(uid, tg_id, email, username, "approved", expiry_ms)
             admin_notify(tg_id, username, email, months, amount, "Продление")
-            safe_send_message(tg_id, f"🔄 <b>Подписка успешно продлена на {months} {months_word(months)}!</b>", reply_markup=main_menu())
+            safe_send_message(tg_id, f"🔄 <b>Подписка успешно продлена на {months} месяцев!</b>", reply_markup=main_menu())
             sub(tg_id)  # покажет актуальную информацию
             print(f"✅ Успешное продление для tg_id={tg_id}")
         else:
@@ -1479,8 +1269,25 @@ def send_instruction_video(chat_id):
 
 
 
-# [FIX] Удалён обработчик callback "cancel:<tg_id>": ни одна кнопка такой callback не создаёт,
-# а сам хендлер брал tg_id из callback_data вместо call.from_user.id.
+# Обработчик отмены оплаты
+@bot.callback_query_handler(func=lambda call: call.data.startswith("cancel:"))
+def handle_cancel(call):
+    tg_id = int(call.data.split(":")[1])
+
+    pending_requests.pop(tg_id, None)
+
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+    bot.send_message(
+        tg_id,
+        "❌ Оплата отменена",
+        reply_markup=main_menu()
+    )
+
+    bot.answer_callback_query(call.id)
 
 
 
@@ -1490,19 +1297,37 @@ def send_instruction_video(chat_id):
 # ====================== Реакция на кнопку "Моя подписка"  =======================
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "📦 Моя подписка")
 def subscribe_handler(message):
-    # Пользователь мог быть добавлен админом по username — привязываем tg_id
-    link_admin_added_user(message.from_user)
+    tg_id = message.from_user.id
+    username = (message.from_user.username or "no_username").lower().replace("@", "")
+
+    # 2. Ищем по username (пользователь добавлен админом)
+    if username and username != "no_username":
+        uid_by_name, user_by_name = get_user_by_username(username)
+        if user_by_name and user_by_name.get("status") == "approved" and user_by_name.get("tg_id") == "by_admin":
+
+            # Обновляем tgId
+            update_tg_id(uid_by_name, tg_id, username)
 
     # Показываем информацию о подписке
-    sub(message.from_user.id, message)
+    sub(tg_id, message)
 
 
 
 # ====================== Реакция на кнопку "Рефералка"  =======================
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "🎟 Рефералка")
 def referral_handler(message):
-    link_admin_added_user(message.from_user)
-    show_referral(message.from_user.id)
+    tg_id = message.from_user.id
+    username = (message.from_user.username or "no_username").lower().replace("@", "")
+
+    # 2. Ищем по username (пользователь добавлен админом)
+    if username and username != "no_username":
+        uid_by_name, user_by_name = get_user_by_username(username)
+        if user_by_name and user_by_name.get("status") == "approved" and user_by_name.get("tg_id") == "by_admin":
+
+            # Обновляем tgId
+            update_tg_id(uid_by_name, tg_id, username)
+
+    show_referral(tg_id)
 
 def show_referral(tg_id):
     uid, user_data = get_user_by_tg_id(tg_id)
@@ -1557,20 +1382,21 @@ def show_referral(tg_id):
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "🔄 Продлить подписку")
 def renew_handler(message):
     tg_id = message.from_user.id
+    username = (message.from_user.username or "no_username").lower().replace("@", "")
 
-    link_admin_added_user(message.from_user)
+    # 2. Ищем по username (пользователь добавлен админом)
+    if username and username != "no_username":
+        uid_by_name, user_by_name = get_user_by_username(username)
+        if user_by_name and user_by_name.get("status") == "approved" and user_by_name.get("tg_id") == "by_admin":
+
+            # Обновляем tgId
+            update_tg_id(uid_by_name, tg_id, username)
 
     # Получаем данные пользователя
     uid, user_data = get_user_by_tg_id(tg_id)
 
-    # [FIX] Незарегистрированный пользователь не может «продлить» — раньше он доходил до оплаты,
-    # а после оплаты получал «Ошибка продления» (клиента-то нет).
-    if not user_data:
-        bot.send_message(message.chat.id, "❌ У вас ещё нет подписки. Нажмите /start, чтобы оформить её.")
-        return
-
     # Проверка на бессрочную подписку
-    if user_data.get("expiry_time") == 0:
+    if user_data and user_data.get("expiry_time") == 0:
         bot.send_message(
             message.chat.id,
             "♾ <b>У вас бессрочная подписка!</b>\n\n"
@@ -1582,7 +1408,7 @@ def renew_handler(message):
         return
 
     # Обычная логика продления (для пользователей со сроком)
-    # [FIX] Убрана преждевременная запись pending_requests — её делает send_invoice.
+    pending_requests[tg_id] = {"flow": "renew"}
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
         types.InlineKeyboardButton(f"📅 На 1 месяц — {PRICE_PER_MONTH}₽", callback_data="renew:1"),
@@ -1592,8 +1418,8 @@ def renew_handler(message):
         message.chat.id,
         "💰 <b>Цена:</b>\n"
         f"{PRICE_PER_MONTH}₽ / месяц\n"
-        f"{get_price_per_month(FIRST_DISCOUNT_COUNT_MONTH)}₽ / от {FIRST_DISCOUNT_COUNT_MONTH} {months_word(FIRST_DISCOUNT_COUNT_MONTH)}\n"
-        f"{get_price_per_month(SECOND_DISCOUNT_COUNT_MONTH)}₽ / от {SECOND_DISCOUNT_COUNT_MONTH} {months_word(SECOND_DISCOUNT_COUNT_MONTH)}\n\n"
+        f"{get_price_per_month(3)}₽ / от трёх месяцев\n"
+        f"{get_price_per_month(8)}₽ / от восьми месяцев\n\n"
         "🔄 Выберите срок продления:",
         parse_mode="HTML",
         reply_markup=markup
@@ -1606,10 +1432,7 @@ def renew_handler(message):
 def handle_renew_choice(call):
     action = call.data.split(":")[1]
     tg_id = call.from_user.id
-    username = norm_username(call.from_user)
-
-    bot.answer_callback_query(call.id)
-    bot.clear_step_handler_by_chat_id(call.message.chat.id)
+    username = (call.from_user.username or "no_username").lower().replace("@", "")
 
     try:
         bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -1622,21 +1445,43 @@ def handle_renew_choice(call):
         msg = bot.send_message(tg_id, "📅 Введите количество месяцев (1–12):")
         bot.register_next_step_handler(msg, process_months_input, tg_id, flow="renew")
 
+    bot.answer_callback_query(call.id)
+
 
 
 # ====================== Реакция на кнопку "Инструкция"  =======================
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "📑 Инструкция")
 def instruction_handler(message):
-    link_admin_added_user(message.from_user)
-    instruction_send(message.from_user.id)
+    tg_id = message.from_user.id
+    username = (message.from_user.username or "no_username").lower().replace("@", "")
+
+    # 2. Ищем по username (пользователь добавлен админом)
+    if username and username != "no_username":
+        uid_by_name, user_by_name = get_user_by_username(username)
+        if user_by_name and user_by_name.get("status") == "approved" and user_by_name.get("tg_id") == "by_admin":
+
+            # Обновляем tgId
+            update_tg_id(uid_by_name, tg_id, username)
+
+    instruction_send(tg_id)
 
 
 
 # ====================== Реакция на кнопку "Поддержка"  =======================
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "📩 Поддержка")
 def support_handler(message):
-    link_admin_added_user(message.from_user)
-    bot.send_message(message.from_user.id, f"📩 Поддержка\n👤 Напишите сюда: {SUPPORT}\n\n⏱ Мы ответим вам как можно скорее.", reply_markup=main_menu())
+    tg_id = message.from_user.id
+    username = (message.from_user.username or "no_username").lower().replace("@", "")
+
+    # 2. Ищем по username (пользователь добавлен админом)
+    if username and username != "no_username":
+        uid_by_name, user_by_name = get_user_by_username(username)
+        if user_by_name and user_by_name.get("status") == "approved" and user_by_name.get("tg_id") == "by_admin":
+
+            # Обновляем tgId
+            update_tg_id(uid_by_name, tg_id, username)
+
+    bot.send_message(tg_id, f"📩 Поддержка\n👤 Напишите сюда: {SUPPORT}\n\n⏱ Мы ответим вам как можно скорее.", reply_markup=main_menu())
 
 
 
@@ -1650,7 +1495,6 @@ def admin_handler(message):
     if not is_admin(message.from_user.id):
         return
 
-    bot.clear_step_handler_by_chat_id(message.chat.id)
     bot.send_message(
         message.chat.id,
         "⚙️ Админ-панель",
@@ -1660,15 +1504,6 @@ def admin_handler(message):
 # Проверка на админа
 def is_admin(user_id):
     return user_id == ADMIN_ID
-
-
-def _remove_inline_keyboard(call):
-    """[FIX] Убираем инлайн-кнопки сразу после нажатия — защита от двойного клика
-    (раньше двойной тап по «На 1 месяц» продлевал/создавал клиента дважды)."""
-    try:
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-    except Exception:
-        pass
 
 
 
@@ -1718,16 +1553,19 @@ def users_filter_callback(call):
         show_users_list(call.message, filter_type)
 
 def show_users_list(message, filter_type="all"):
-    users = load_users_db()
-    if not users:
-        bot.send_message(message.chat.id, "users.json не найден или пуст")
+    if not os.path.exists("users.json"):
+        bot.send_message(message.chat.id, "users.json не найден")
         return
+
+    with open("users.json", "r", encoding="utf-8") as f:
+        users = json.load(f)
 
     all_traffic = get_all_users_traffic()
     online_clients = get_online_clients()
 
     messages = []
     messages.append(f"👥 Пользователи — {filter_type.upper()}\n\n{'─' * 18}\n\n")
+    count = 0
     current = ""
 
     for key, info in users.items():
@@ -1735,6 +1573,7 @@ def show_users_list(message, filter_type="all"):
         tg_id = info.get("tg_id", "-")
         email = info.get("email", "-")
         username = info.get("username", "no_username")
+        status = info.get("status", "unknown")
         expiry = info.get("expiry_time", 0)
         sub_id = info.get("sub_id", "-")
         ref_code = info.get("referral_code", "—")
@@ -1750,21 +1589,21 @@ def show_users_list(message, filter_type="all"):
             expiry / 1000, tz=moscow_tz
         ).strftime("%d.%m.%Y %H:%M")
 
-        online = bool(email and email in online_clients)
+        online = False
+        if email and email in online_clients:
+            online = True
 
         traffic_data = all_traffic.get(email, {})
         up = round(traffic_data.get("up", 0) / (1024**3), 2)
         down = round(traffic_data.get("down", 0) / (1024**3), 2)
 
-        # [FIX] html.escape: в email/username от админа мог попасть символ <, & —
-        # Telegram отклонял всё сообщение (Bad Request: can't parse entities)
         user_block = (
-            f"🆔 <b>UID:</b> <code>{html.escape(str(uid))}</code>\n"
-            f"👤 <b>TG ID:</b> <code>{html.escape(str(tg_id))}</code>\n"
-            f"💬 <b>User:</b> @{html.escape(str(username))}\n"
-            f"📧 <b>Email:</b> <code>{html.escape(str(email))}</code>\n\n"
+            f"🆔 <b>UID:</b> <code>{uid}</code>\n"
+            f"👤 <b>TG ID:</b> <code>{tg_id}</code>\n"
+            f"💬 <b>User:</b> @{username}\n"
+            f"📧 <b>Email:</b> <code>{email}</code>\n\n"
 
-            f"🔑 <b>Ref код:</b> <code>{html.escape(str(ref_code))}</code>\n\n"
+            f"🔑 <b>Ref код:</b> <code>{ref_code}</code>\n\n"
 
             f"📊 <b>Status:</b> {'🟢 Online' if online else '🔴 Offline'}\n\n"
 
@@ -1774,7 +1613,7 @@ def show_users_list(message, filter_type="all"):
             f"⏳ <b>Expire:</b> {expiry_date}\n\n"
 
             f"🔗 <b>SUB LINK:</b>\n"
-            f"<code>{XUI_SUB_LINK}/{html.escape(str(sub_id))}</code>\n\n"
+            f"<code>{XUI_SUB_LINK}/{sub_id}</code>\n\n"
 
             f"{'─' * 18}\n\n"
         )
@@ -1805,9 +1644,8 @@ def get_online_clients():
             headers=headers,
             timeout=15
         )
-        data = _xui_json(r)
-        if r.status_code == 200 and data.get("success"):
-            return set(data.get("obj") or [])
+        if r.status_code == 200 and r.json().get("success"):
+            return set(r.json().get("obj", []))
     except Exception as e:
         print(f"Online check error: {e}")
     return set()
@@ -1824,15 +1662,14 @@ def get_all_users_traffic():
             headers=headers,
             timeout=15
         )
-        data = _xui_json(r)
 
-        if r.status_code != 200 or not data.get("success"):
+        if r.status_code != 200 or not r.json().get("success"):
             return traffic
 
-        inbounds = data.get("obj") or []
+        inbounds = r.json().get("obj", [])
 
         for inbound in inbounds:
-            client_stats = inbound.get("clientStats") or []
+            client_stats = inbound.get("clientStats", [])
 
             for client in client_stats:
                 email = client.get("email")
@@ -1868,19 +1705,12 @@ def process_ask_username(message):
     msg = bot.send_message(
         message.chat.id,
         "👤 Введите @username пользователя\n\n"
-        "Если username неизвестен — напишите -"
+        "Если username неизвестен — напишите `-`"
     )
     bot.register_next_step_handler(msg, admin_process_ask_email)
 
 # Спрашиваем email
 def admin_process_ask_email(message):
-    if step_interrupted(message):
-        return
-    if not message.text:
-        msg = bot.send_message(message.chat.id, "❌ Нужен текст. Введите @username или -")
-        bot.register_next_step_handler(msg, admin_process_ask_email)
-        return
-
     input_text = message.text.strip()
 
     global admin_given_username
@@ -1898,12 +1728,6 @@ def admin_process_ask_email(message):
 
 # Спрашиваем время подписки
 def admin_process_ask_time_new(message):
-    if step_interrupted(message):
-        return
-    if not message.text or not message.text.strip():
-        msg = bot.send_message(message.chat.id, "❌ Email не может быть пустым. Введите Email (base name):")
-        bot.register_next_step_handler(msg, admin_process_ask_time_new)
-        return
 
     base_name = message.text.strip().lower()
 
@@ -1922,32 +1746,27 @@ def process_add_by_email(call):
     if call.from_user.id != ADMIN_ID:
         return
 
-    # [FIX] Не было answer_callback_query («часики» на кнопке) и кнопки не убирались
-    bot.answer_callback_query(call.id)
-    _remove_inline_keyboard(call)
-    bot.clear_step_handler_by_chat_id(call.message.chat.id)
-
     action = call.data.split(":")[1]
 
     if action == "multi":
         msg = bot.send_message(call.message.chat.id, "Введите количество месяцев (1-12):")
         bot.register_next_step_handler(msg, admin_add_multi_months)
     elif action == "unlimited":
-        admin_add_user(call.message, 0)
+        months = 0
+        admin_add_user(call.message, months)
     else:
-        admin_add_user(call.message, 1)
+        months = 1
+        admin_add_user(call.message, months)
 
 # Обработка ввода кол-ва месяцев
 def admin_add_multi_months(message):
-    if step_interrupted(message):
-        return
     try:
-        months = int((message.text or "").strip())
+        months = int(message.text.strip())
         if months < 1 or months > 12:
             raise ValueError
     except:
-        msg = bot.send_message(message.chat.id, "❌ Введите корректное кол-во месяцев (1-12)")
-        bot.register_next_step_handler(msg, admin_add_multi_months)
+        bot.send_message(message.chat.id, "❌ Введите корректное кол-во месяцев (1-12)")
+        bot.register_next_step_handler(message, admin_add_multi_months)
         return
 
     admin_add_user(message, months)
@@ -1955,13 +1774,6 @@ def admin_add_multi_months(message):
 # Добавление пользователя через админа
 def admin_add_user(message, months):
     global admin_given_email, admin_given_username
-
-    # [FIX] Если бот перезапускали между шагами, глобальные переменные пустые —
-    # раньше создавался клиент с именем "<uid>_None_by_admin"
-    if not admin_given_email:
-        bot.send_message(message.chat.id, "❌ Данные потеряны (бот перезапускался?). Начните заново.", reply_markup=admin_panel())
-        return
-
     tg_id = None
     uid = get_or_create_uid(tg_id)
 
@@ -1983,8 +1795,8 @@ def admin_add_user(message, months):
             message.chat.id,
             f"✅ Пользователь успешно создан!\n\n"
             f"🆔 UID: <b>{uid}</b>\n"
-            f"👤 Username: @{html.escape(str(username_display))}\n"
-            f"📧 Email: <code>{html.escape(str(email))}</code>\n"
+            f"👤 Username: @{username_display}\n"
+            f"📧 Email: <code>{email}</code>\n"
             f"📅 <b>Действует до:</b> {expiry_date}\n\n"
             f"🎟 <b>Реф код:</b> <code>{ref_code}</code>\n\n"
             f"🔗 Ссылка:\n<code>{sub_link}</code>",
@@ -1992,7 +1804,7 @@ def admin_add_user(message, months):
             reply_markup=admin_panel()
         )
     else:
-        bot.send_message(message.chat.id, f"❌ Ошибка создания: {error_msg}", reply_markup=admin_panel())
+        bot.send_message(message.chat.id, f"❌ Ошибка создания: {error_msg}")
 
     # Очистка
     admin_given_email = None
@@ -2010,16 +1822,8 @@ def process_ask_uid(message):
     bot.register_next_step_handler(msg, admin_process_ask_time_renew)
 
 def admin_process_ask_time_renew(message):
-    if step_interrupted(message):
-        return
 
-    uid = (message.text or "").strip().lower()
-
-    # [FIX] Проверяем UID сразу, а не после выбора срока
-    if not uid or uid not in load_users_db():
-        msg = bot.send_message(message.chat.id, f"❌ Пользователь с UID {html.escape(uid) or '—'} не найден. Введите uid ещё раз:")
-        bot.register_next_step_handler(msg, admin_process_ask_time_renew)
-        return
+    uid = message.text.strip().lower()
 
     global admin_renew_uid
     admin_renew_uid = uid
@@ -2036,10 +1840,6 @@ def process_renew_choice(call):
     if call.from_user.id != ADMIN_ID:
         return
 
-    bot.answer_callback_query(call.id)
-    _remove_inline_keyboard(call)
-    bot.clear_step_handler_by_chat_id(call.message.chat.id)
-
     action = call.data.split(":")[1]
 
     if action == "multi":
@@ -2049,20 +1849,18 @@ def process_renew_choice(call):
         months = 0 if action == "unlimited" else 1
         admin_renew_user(call.message, months)
 
+    bot.answer_callback_query(call.id)
+
 # Обработка ввода кол-ва месяцев
 def admin_renew_multi_months(message):
-    if step_interrupted(message):
-        return
     try:
-        months = int((message.text or "").strip())
+        months = int(message.text.strip())
         if months < 1 or months > 12:
             raise ValueError
+        admin_renew_user(message, months)
     except:
         msg = bot.send_message(message.chat.id, "❌ Введите корректное кол-во месяцев (1-12)")
         bot.register_next_step_handler(msg, admin_renew_multi_months)
-        return
-
-    admin_renew_user(message, months)
 
 # Продление пользователя через админа
 def admin_renew_user(message, months):
@@ -2070,13 +1868,22 @@ def admin_renew_user(message, months):
     uid = admin_renew_uid
 
     if not uid:
-        bot.send_message(message.chat.id, "❌ Ошибка: UID не найден (бот перезапускался?). Начните заново.", reply_markup=admin_panel())
+        bot.send_message(message.chat.id, "❌ Ошибка: UID не найден.")
         return
 
-    user_data = load_users_db().get(str(uid))
+    # === Получаем данные пользователя из users.json ===
+    user_key = str(uid)
+
+    try:
+        with open("users.json", "r", encoding="utf-8") as f:
+            users = json.load(f)
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка чтения users.json: {e}")
+        return
+
+    user_data = users.get(str(uid))
     if not user_data:
-        bot.send_message(message.chat.id, f"❌ Пользователь с UID {uid} не найден.", reply_markup=admin_panel())
-        admin_renew_uid = None
+        bot.send_message(message.chat.id, f"❌ Пользователь с UID {uid} не найден.")
         return
 
     tg_id = user_data.get("tg_id")
@@ -2085,15 +1892,21 @@ def admin_renew_user(message, months):
     sub_id = user_data.get("sub_id")
 
     if not email:
-        bot.send_message(message.chat.id, f"❌ У пользователя с UID {uid} не найден email.", reply_markup=admin_panel())
-        admin_renew_uid = None
+        bot.send_message(message.chat.id, f"❌ У пользователя с UID {uid} не найден email.")
         return
 
-    # [FIX] renew_vpn_client сам пишет новую дату в users.json — повторная запись
-    # старым словарём (как было) могла затереть чужие изменения.
     success, error_msg, email, new_expiry = renew_vpn_client(uid, tg_id, username, months)
 
     if success and new_expiry is not None:
+        # Продляем дату
+        users[user_key]["expiry_time"] = new_expiry
+
+        try:
+            with open("users.json", "w", encoding="utf-8") as f:
+                json.dump(users, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+                    bot.send_message(message.chat.id, f"❌ Ошибка записи в users.json: {e}")
+
         moscow_tz = ZoneInfo("Europe/Moscow")
         expiry_date = "БЕССРОЧНО" if new_expiry == 0 else datetime.fromtimestamp(
             new_expiry / 1000, tz=moscow_tz
@@ -2101,13 +1914,12 @@ def admin_renew_user(message, months):
 
         sub_link = f"{XUI_SUB_LINK}/{sub_id}"
 
-        # [FIX] было **...** при parse_mode="HTML" — звёздочки печатались как есть
         bot.send_message(
             message.chat.id,
-            f"✅ <b>Подписка успешно продлена!</b>\n\n"
+            f"✅ **Подписка успешно продлена!**\n\n"
             f"🆔 UID: <b>{uid}</b>\n"
-            f"👤 @{html.escape(str(username))}\n"
-            f"📧 <code>{html.escape(str(email))}</code>\n"
+            f"👤 @{username}\n"
+            f"📧 <code>{email}</code>\n"
             f"🔄 Месяцев добавлено: {months if months > 0 else '∞'}\n"
             f"📅 Новая дата окончания: <b>{expiry_date}</b>\n\n"
             f"🔗 Ссылка:\n<code>{sub_link}</code>",
@@ -2116,9 +1928,7 @@ def admin_renew_user(message, months):
         )
 
         # Уведомляем пользователя, если есть tg_id
-        # [FIX] было tg_id != "unlimited" — такого значения нет, у добавленных админом
-        # tg_id == "by_admin", int("by_admin") падал и админ видел ложную ошибку.
-        if tg_id and str(tg_id).isdigit():
+        if tg_id and tg_id != "unlimited":
             try:
                 period_text = (
                     f"{months} {months_word(months)}."
@@ -2138,7 +1948,7 @@ def admin_renew_user(message, months):
             except Exception as e:
                 bot.send_message(message.chat.id, f"❌ Ошибка отправки уведомления пользователя: {e}")
         else:
-            bot.send_message(message.chat.id, "ℹ️ Пользователь ещё не заходил в бота (tg_id неизвестен) — уведомление не отправлено.")
+            bot.send_message(message.chat.id, f"❌ Не найден tg_id пользователя")
     else:
         bot.send_message(
             message.chat.id,
@@ -2154,17 +1964,15 @@ def admin_renew_user(message, months):
 def ask_delete_user(message):
     if message.from_user.id != ADMIN_ID:
         return
-    msg = bot.send_message(message.chat.id, "🗑 Введите <b>UID</b> пользователя для удаления:", parse_mode="HTML")
+    msg = bot.send_message(message.chat.id,"🗑 Введите **UID** пользователя для удаления:")
     bot.register_next_step_handler(msg, process_delete_by_uid)
 
 # Проверка uid
 def process_delete_by_uid(message):
-    if step_interrupted(message):
-        return
     try:
-        uid = int((message.text or "").strip())
+        uid = int(message.text.strip())
     except:
-        return bot.send_message(message.chat.id, "❌ Неверный UID. Введите число.", reply_markup=admin_panel())
+        return bot.send_message(message.chat.id, "❌ Неверный UID. Введите число.")
 
     success, msg = delete_vpn_user_by_uid(uid)
     if success:
@@ -2175,41 +1983,36 @@ def process_delete_by_uid(message):
 # Удаление клиента
 def delete_vpn_user_by_uid(uid: int):
     try:
-        users = load_users_db()
-    except Exception:
+        with open("users.json", "r", encoding="utf-8") as f:
+            users = json.load(f)
+    except Exception as e:
         return False, "users.json not found"
 
     target_key = str(uid)
-    if target_key not in users:
+    try:
+        email = users[target_key].get("email")
+    except Exception:
         return False, f"Пользователь с UID {uid} не найден"
 
-    email = users[target_key].get("email")
     if not email:
         return False, "Email не найден"
 
     try:
         r = requests.post(
-            f"{XUI_URL}/panel/api/clients/del/{_xui_email_path(email)}",
+            f"{XUI_URL}/panel/api/clients/del/{email}",
             headers=headers,
             timeout=15
         )
-        data = _xui_json(r)
 
-        panel_ok = r.status_code == 200 and data.get("success")
-        error = str(data.get("msg") or r.text)
-        # [FIX] Если клиента уже удалили в панели вручную, раньше запись в users.json
-        # было невозможно удалить из бота вообще.
-        already_gone = "not found" in error.lower()
+        if r.status_code == 200 and r.json().get("success"):
+            # Удаляем из users.json
+            del users[target_key]
+            with open("users.json", "w", encoding="utf-8") as f:
+                json.dump(users, f, ensure_ascii=False, indent=4)
 
-        if panel_ok or already_gone:
-            with USERS_LOCK:
-                users = load_users_db()
-                users.pop(target_key, None)
-                save_users_db(users)
-
-            note = " (в панели его уже не было)" if already_gone and not panel_ok else ""
-            return True, f"Клиент {email} успешно удалён (UID: {uid}){note}"
+            return True, f"Клиент {email} успешно удалён (UID: {uid})"
         else:
+            error = r.json().get("msg", r.text)
             return False, f"Ошибка удаления: {error}"
 
     except Exception as e:
@@ -2238,14 +2041,11 @@ def get_servers_status():
     # ==================== CENTRAL SERVER ====================
     try:
         r = requests.get(f"{XUI_URL}/panel/api/server/status", headers=headers, timeout=15)
-        data = _xui_json(r)
 
-        if r.status_code == 200 and data.get("success"):
-            s = data["obj"]
+        if r.status_code == 200 and r.json().get("success"):
+            s = r.json()["obj"]
 
-            cpu = s.get('cpu')
-            # [FIX] f"{'N/A':.1f}" бросал ValueError, и весь блок превращался в Error
-            cpu_str = f"{cpu:.1f}%" if isinstance(cpu, (int, float)) else "N/A"
+            cpu = s.get('cpu', 'N/A')
             mem_current = round(s['mem']['current'] / 1024**3, 2) if 'mem' in s else 'N/A'
             mem_total = round(s['mem']['total'] / 1024**3, 2) if 'mem' in s else 'N/A'
             disk_current = round(s.get('disk', {}).get('current', 0) / 1024**3, 1)
@@ -2257,11 +2057,11 @@ def get_servers_status():
             text += (
                 "🌐 <b>CENTRAL SERVER</b>\n"
                 f"{'─' * 18}\n\n"
-                f"🧠 CPU: <b>{cpu_str}</b>\n"
+                f"🧠 CPU: <b>{cpu:.1f}%</b>\n"
                 f"💾 RAM: <b>{mem_current} / {mem_total} GB</b>\n"
                 f"📦 Disk: <b>{disk_current} / {disk_total} GB</b>\n"
                 f"🔌 TCP: <b>{tcp_count}</b>\n"
-                f"⚙️ XRAY: <b>{html.escape(str(xray_state))}</b> (<code>{html.escape(str(xray_version))}</code>)\n\n"
+                f"⚙️ XRAY: <b>{xray_state}</b> (<code>{xray_version}</code>)\n\n"
                 f"{'─' * 18}\n\n"
             )
         else:
@@ -2271,20 +2071,19 @@ def get_servers_status():
         text += (
             "🌐 <b>CENTRAL SERVER</b>\n"
             f"{'─' * 18}\n"
-            f"❌ <b>Error:</b> <code>{html.escape(str(e)[:250])}</code>\n\n"
+            f"❌ <b>Error:</b> <code>{str(e)[:250]}</code>\n\n"
             f"{'─' * 18}\n\n"
         )
 
     # ==================== NODES ====================
     try:
         r = requests.get(f"{XUI_URL}/panel/api/nodes/list", headers=headers, timeout=15)
-        data = _xui_json(r)
 
-        if r.status_code != 200 or not data.get("success"):
+        if r.status_code != 200 or not r.json().get("success"):
             text += "🖥 <b>NODES</b>\n❌ Failed to get node list\n"
             return text
 
-        nodes = data.get("obj") or []
+        nodes = r.json()["obj"]
 
         if not nodes:
             text += "🖥 <b>NODES</b>\nNo nodes\n"
@@ -2299,7 +2098,8 @@ def get_servers_status():
             cpu_pct = node.get("cpuPct")
             mem_pct = node.get("memPct")
             latency = node.get("latencyMs")
-            uptime_secs = node.get("uptimeSecs") or 0
+            uptime_secs = node.get("uptimeSecs", 0)
+            online_count = node.get("onlineCount", 0)
 
             cpu_str = f"{round(cpu_pct, 1)}%" if isinstance(cpu_pct, (int, float)) else "N/A"
             mem_str = f"{round(mem_pct, 1)}%" if isinstance(mem_pct, (int, float)) else "N/A"
@@ -2308,7 +2108,7 @@ def get_servers_status():
             status_emoji = "🟢" if status == "online" else "🔴"
 
             text += (
-                f"<b>{html.escape(str(name))}</b>\n\n"
+                f"<b>{name}</b>\n\n"
                 f"{status_emoji} <b>{'Online' if status == 'online' else 'Offline'}</b>\n"
                 f"🧠 CPU: <b>{cpu_str}</b>\n"
                 f"💾 RAM: <b>{mem_str}</b>\n"
@@ -2318,7 +2118,7 @@ def get_servers_status():
             )
 
     except Exception as e:
-        text += f"🖥 <b>NODES ERROR:</b> <code>{html.escape(str(e)[:300])}</code>\n"
+        text += f"🖥 <b>NODES ERROR:</b> <code>{str(e)[:300]}</code>\n"
 
     return text
 
@@ -2330,48 +2130,26 @@ def sync_users_handler(message):
     if not is_admin(message.from_user.id):
         return
 
-    # [FIX] Не даём запустить две синхронизации параллельно
-    if not SYNC_LOCK.acquire(blocking=False):
-        bot.send_message(message.chat.id, "⏳ Синхронизация уже идёт, дождитесь результата.")
-        return
-
     msg = bot.send_message(
         message.chat.id,
-        "🔄 Запускаю синхронизацию клиентов (inbound'ы, flow, включение, UUID)...\n"
+        "🔄 Запускаю синхронизацию привязок клиентов к inbound'ам...\n"
         "Это может занять время при большом количестве клиентов."
     )
 
-    # [FIX] Синхронизация идёт в отдельном потоке: раньше она занимала один из двух
-    # рабочих потоков telebot, и бот «подвисал» для пользователей на время синка.
-    def worker():
-        try:
-            stats = sync_clients()
-            text = format_sync_report(stats)
-        except Exception as e:
-            traceback.print_exc()
-            text = f"❌ <b>Синхронизация не выполнена</b>\n<code>{html.escape(str(e)[:500])}</code>"
-        finally:
-            SYNC_LOCK.release()
+    attached_count, already_ok_count, error_count = sync_client_inbounds()
 
-        try:
-            bot.edit_message_text(
-                chat_id=message.chat.id,
-                message_id=msg.message_id,
-                text=text,
-                parse_mode="HTML"
-            )
-        except Exception:
-            bot.send_message(message.chat.id, text, parse_mode="HTML")
+    bot.edit_message_text(
+        chat_id=message.chat.id,
+        message_id=msg.message_id,
+        text=f"✅ <b>Синхронизация привязок завершена!</b>\n\n"
+             f"Привязано к новым inbound'ам: <b>{attached_count}</b>\n"
+             f"Уже было в порядке: <b>{already_ok_count}</b>\n"
+             f"Ошибок: <b>{error_count}</b>",
+        parse_mode="HTML"
+    )
 
-    threading.Thread(target=worker, daemon=True).start()
-
-
-def fetch_all_clients(page_size=200, max_pages=500):
-    """
-    Забирает всех клиентов постранично через /clients/list/paged.
-    [FIX] Параметр размера страницы в 3x-ui называется pageSize (ClientPageParams, form:"pageSize"),
-    а не size — раньше он игнорировался и панель отдавала по 25 клиентов. Максимум — 200.
-    """
+def fetch_all_clients(page_size=50, max_pages=200):
+    """Забирает всех клиентов постранично через /clients/list/paged"""
     clients = []
     page = 1
     while page <= max_pages:
@@ -2379,203 +2157,94 @@ def fetch_all_clients(page_size=200, max_pages=500):
         r = requests.get(
             f"{XUI_URL}/panel/api/clients/list/paged",
             headers=headers,
-            params={"page": page, "pageSize": page_size},
+            params={"page": page, "size": page_size},
             timeout=60
         )
-        data = _xui_json(r)
+        data = r.json()
         print(f"clients/list/paged: страница {page}, HTTP {r.status_code}, {time.time()-t0:.1f}с")
 
         if r.status_code != 200 or not data.get("success"):
-            raise RuntimeError(f"clients/list/paged → HTTP {r.status_code}: {str(data.get('msg') or r.text)[:300]}")
+            raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
 
         obj = data.get("obj") or {}
         items = obj.get("items") or []
         clients.extend(items)
 
-        total = obj.get("filtered", obj.get("total", 0))
+        total = obj.get("total", 0)
         if not items or len(clients) >= total:
             break
         page += 1
 
     return clients
 
-
-def _as_dict(value) -> dict:
-    """В 3x-ui v3 settings/streamSettings приходят объектами, в старых версиях — JSON-строкой."""
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str) and value.strip():
+def sync_client_inbounds():
+    """
+    Проверяет и привязывает всех клиентов к inbound'ам из XUI_INBOUND_IDS
+    """
+    try:
         try:
-            parsed = json.loads(value)
-            return parsed if isinstance(parsed, dict) else {}
-        except json.JSONDecodeError:
-            return {}
-    return {}
+            clients = fetch_all_clients()
+        except Exception as e:
+            print(f"❌ Не удалось получить список клиентов: {repr(e)}")
+            return 0, 0, 1
 
+        target_inbounds = set(XUI_INBOUND_IDS)   # например {59, 143, 144, 145}
 
-def _inbound_flow_capable(inbound: dict) -> bool:
-    """Повторяет inboundCanEnableTlsFlow + DisableFlow из исходников 3x-ui."""
-    if inbound.get("protocol") != "vless" or inbound.get("disableFlow"):
-        return False
-    stream = _as_dict(inbound.get("streamSettings"))
-    network = stream.get("network")
-    if network == "tcp":
-        return stream.get("security") in ("tls", "reality")
-    if network == "xhttp":
-        settings = _as_dict(inbound.get("settings"))
-        return any(v and v != "none" for v in (settings.get("encryption"), settings.get("decryption")))
-    return False
+        attached_count = 0
+        already_ok_count = 0
+        error_count = 0
+        skipped_count = 0
 
-
-def audit_target_inbounds():
-    """
-    Смотрит реальные записи клиентов в settings целевых inbound'ов.
-    Возвращает (flow_broken, bad_uuid) — множества email'ов.
-
-    Почему не через GET /clients/get: он отдаёт «эффективный» flow — первый непустой.
-    Если flow слетел только на одном inbound из четырёх, GET этого не покажет.
-    """
-    r = requests.get(f"{XUI_URL}/panel/api/inbounds/list", headers=headers, timeout=60)
-    data = _xui_json(r)
-    if r.status_code != 200 or not data.get("success"):
-        raise RuntimeError(f"inbounds/list → HTTP {r.status_code}: {str(data.get('msg') or r.text)[:300]}")
-
-    target = set(XUI_INBOUND_IDS)
-    flow_broken, bad_uuid = set(), set()
-
-    for inbound in data.get("obj") or []:
-        if inbound.get("id") not in target:
-            continue
-        settings = _as_dict(inbound.get("settings"))
-        check_flow = bool(XUI_CLIENT_FLOW) and _inbound_flow_capable(inbound)
-        check_uuid = inbound.get("protocol") in ("vless", "vmess")
-
-        for entry in settings.get("clients") or []:
-            if not isinstance(entry, dict):
-                continue
-            email = entry.get("email")
+        for client in clients:
+            email = client.get("email")
             if not email:
                 continue
-            if check_flow and (entry.get("flow") or "") != XUI_CLIENT_FLOW:
-                flow_broken.add(email)
-            if check_uuid and entry.get("id") and not _is_valid_uuid(entry.get("id")):
-                bad_uuid.add(email)
-
-    return flow_broken, bad_uuid
-
-
-def sync_clients() -> dict:
-    """
-    Проверяет всех клиентов панели и чинит:
-      • недостающие inbound'ы из XUI_INBOUND_IDS;
-      • слетевший flow (на любом из целевых inbound'ов);
-      • UUID, испорченный старым кодом продления (не-UUID значение);
-      • клиентов, которые оплачены (по панели И по users.json), но остались выключены
-        — это жертвы старого бага «дата сдвинулась, клиент не включился».
-
-    [FIX] Выключенные клиенты больше не ломают синхронизацию и не считаются ошибкой:
-      • истёкшие — пропускаются;
-      • выключенные, но не оплаченные по данным бота (например, отключены вручную в панели
-        и не из бота) — пропускаются и показываются отдельной строкой.
-    """
-    stats = {
-        "total": 0, "ok": 0, "attached": 0, "flow_fixed": 0, "uuid_fixed": 0, "enabled": 0,
-        "skipped_expired": 0, "skipped_disabled": 0, "errors": 0, "missing_in_panel": 0,
-    }
-
-    clients = fetch_all_clients()
-    flow_broken, bad_uuid = audit_target_inbounds()
-
-    users = load_users_db()
-    bot_users = {u.get("email"): u for u in users.values() if u.get("email")}
-
-    target = set(XUI_INBOUND_IDS)
-    now_ms = int(time.time() * 1000)
-    panel_emails = set()
-
-    for client in clients:
-        email = client.get("email")
-        if not email:
-            continue
-        panel_emails.add(email)
-        stats["total"] += 1
-
-        # expiryTime < 0 в 3x-ui — «отсчёт с первого подключения», это активный клиент
-        expiry = int(client.get("expiryTime") or 0)
-        if 0 < expiry <= now_ms:
-            stats["skipped_expired"] += 1
-            continue
-
-        need_enable = False
-        if client.get("enable") is False:
-            bot_user = bot_users.get(email)
-            bot_expiry = bot_user.get("expiry_time") if bot_user else None
-            paid_by_bot = (
-                bot_user is not None
-                and bot_user.get("status") == "approved"
-                and (bot_expiry == 0 or (isinstance(bot_expiry, (int, float)) and bot_expiry > now_ms))
-            )
-            if not paid_by_bot:
-                stats["skipped_disabled"] += 1
+            now_ms = int(time.time() * 1000)
+            expiry = client.get("expiryTime") or 0
+            if client.get("enable") is False or (0 < expiry < now_ms):
+                skipped_count += 1
                 continue
-            need_enable = True
 
-        missing = target - set(client.get("inboundIds") or [])
-        need_flow = email in flow_broken
-        need_uuid = email in bad_uuid
+            # Получаем текущие inbound'ы клиента
+            current_inbounds = set(client.get("inboundIds") or [])
 
-        if not (missing or need_flow or need_uuid or need_enable):
-            stats["ok"] += 1
-            continue
+            # Какие inbound'ы нужно добавить
+            missing = target_inbounds - current_inbounds
 
-        ok, err, attach_err = xui_apply_client_state(
-            email,
-            enable=True if need_enable else None,
-            regenerate_uuid=need_uuid,
-        )
+            if not missing:
+                already_ok_count += 1
+                continue  # уже привязан ко всем нужным
 
-        if not ok or attach_err:
-            stats["errors"] += 1
-            print(f"⚠️ Синхронизация {email}: {err or ''} {attach_err or ''}".strip())
-            continue
+            # Привязываем недостающие inbound'ы
+            try:
+                payload = {
+                    "inboundIds": list(target_inbounds)
+                }
 
-        if missing:
-            stats["attached"] += 1
-        if need_flow:
-            stats["flow_fixed"] += 1
-        if need_uuid:
-            stats["uuid_fixed"] += 1
-            print(f"🔑 {email}: UUID перевыпущен (был не-UUID)")
-        if need_enable:
-            stats["enabled"] += 1
+                resp = requests.post(
+                    f"{XUI_URL}/panel/api/clients/{email}/attach",
+                    headers=headers,
+                    json=payload,
+                    timeout=15
+                )
 
-    stats["missing_in_panel"] = len(set(bot_users) - panel_emails)
+                if resp.status_code == 200 and resp.json().get("success"):
+                    attached_count += 1
+                    print(f"✅ Привязан {email} → добавил {missing}")
+                else:
+                    print(f"⚠️ Ошибка привязки {email}: {resp.text}")
+                    error_count += 1
 
-    print(f"Синхронизация завершена: {stats}")
-    return stats
+            except Exception as e:
+                print(f"❌ Exception при привязке {email}: {e}")
+                error_count += 1
 
+        print(f"Синхронизация завершена. Привязано: {attached_count} | Уже ок: {already_ok_count} | Пропущено: {skipped_count}")
+        return attached_count, already_ok_count, error_count
 
-def format_sync_report(stats: dict) -> str:
-    text = (
-        f"✅ <b>Синхронизация завершена</b>\n\n"
-        f"Клиентов в панели: <b>{stats['total']}</b>\n"
-        f"Уже в порядке: <b>{stats['ok']}</b>\n\n"
-        f"🔗 Привязано к недостающим inbound'ам: <b>{stats['attached']}</b>\n"
-        f"🌊 Исправлен flow: <b>{stats['flow_fixed']}</b>\n"
-        f"🔑 Перевыпущен испорченный UUID: <b>{stats['uuid_fixed']}</b>\n"
-        f"🟢 Включено оплаченных, но выключенных: <b>{stats['enabled']}</b>\n\n"
-        f"⏭ Пропущено (срок истёк): <b>{stats['skipped_expired']}</b>\n"
-        f"⏭ Пропущено (выключены, не оплачены по данным бота): <b>{stats['skipped_disabled']}</b>\n"
-        f"❌ Ошибок: <b>{stats['errors']}</b>"
-    )
-    if stats["missing_in_panel"]:
-        text += f"\n\n⚠️ Есть в users.json, но нет в панели: <b>{stats['missing_in_panel']}</b>"
-    if stats["uuid_fixed"]:
-        text += (
-            "\n\nℹ️ Пользователям с перевыпущенным UUID нужно обновить подписку в приложении "
-            "(в v2raytun — обновить группу подписки), ссылка на подписку не меняется."
-        )
-    return text
+    except Exception as e:
+        print(f"Критическая ошибка синхронизации: {e}")
+        return 0, 0, 1
 
 
 
