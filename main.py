@@ -42,16 +42,40 @@ LOG_FILE = os.path.join(LOG_DIR, "bot.log")
 log = logging.getLogger("vidjet")
 
 
-class _StreamToLogger:
-    """Файлоподобный объект: всё, что в него пишут, уходит в logger построчно."""
+class _StreamToLogger(io.TextIOBase):
+    """
+    Текстовый поток: всё, что в него пишут, уходит в logger построчно.
+
+    Ведёт себя как настоящий sys.stdout — это важно для click (через него Flask печатает
+    баннер «Serving Flask app»). click определяет тип потока пробной записью write(b""):
+    у текстового потока она обязана упасть с TypeError, иначе click решает, что поток
+    бинарный, и начинает писать в него bytes. Также click требует атрибуты encoding/errors.
+    """
 
     def __init__(self, logger, level, original):
+        super().__init__()
         self._logger = logger
         self._level = level
         self._original = original
         self._local = threading.local()
 
+    @property
+    def encoding(self):
+        return "utf-8"
+
+    @property
+    def errors(self):
+        return "replace"
+
+    def writable(self):
+        return True
+
+    def readable(self):
+        return False
+
     def write(self, text):
+        if not isinstance(text, str):
+            raise TypeError(f"write() argument must be str, not {type(text).__name__}")
         if not text:
             return 0
         # Защита от рекурсии: если ошибка случилась внутри самого logging,
@@ -86,10 +110,6 @@ class _StreamToLogger:
 
     def fileno(self):
         return self._original.fileno()
-
-    @property
-    def encoding(self):
-        return getattr(self._original, "encoding", "utf-8")
 
 
 def setup_logging():
@@ -2906,8 +2926,28 @@ if __name__ == '__main__':
         start_expiry_checker()
 
         # Запускаем Flask webhook в отдельном потоке
+        # [FIX] Если сервер вебхуков падает, бот продолжает работать, но оплаты перестают
+        # приниматься — и раньше этого никто не замечал. Теперь: запись в лог, сообщение
+        # админу (один раз) и повторный запуск через 30 секунд.
         def run_flask():
-            app.run(host='127.0.0.1', port=FLASK_PORT, debug=False)
+            admin_notified = False
+            while True:
+                try:
+                    app.run(host='127.0.0.1', port=FLASK_PORT, debug=False)
+                    log.error("Flask-сервер вебхуков неожиданно остановился")
+                except Exception:
+                    log.exception("Flask-сервер вебхуков упал")
+                if not admin_notified:
+                    admin_notified = True
+                    try:
+                        bot.send_message(
+                            ADMIN_ID,
+                            "⚠️ Сервер вебхуков ЮKassa упал — оплаты сейчас не принимаются.\n"
+                            "Перезапускаю каждые 30 секунд. Подробности — в logs/bot.log."
+                        )
+                    except Exception:
+                        log.exception("Не удалось уведомить админа о падении Flask")
+                time.sleep(30)
 
         flask_thread = threading.Thread(target=run_flask, name="flask", daemon=True)
         flask_thread.start()
