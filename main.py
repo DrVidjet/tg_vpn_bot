@@ -21,7 +21,119 @@ import random
 import string
 import re
 import html
+import logging
+from logging.handlers import RotatingFileHandler
 from urllib.parse import quote
+
+# ====================== ЛОГИРОВАНИЕ ======================
+#
+# [FIX] Под systemd stdout — это pipe, а не терминал, и Python буферизует его блоками:
+# print() копился в памяти и в `systemctl status` / journalctl не появлялся.
+# Теперь всё пишется через logging:
+#   • в файл logs/bot.log в папке бота (ротация: 5 файлов по 5 МБ);
+#   • в консоль — модуль logging сбрасывает её после каждой записи, поэтому journal видит всё сразу.
+# print() и traceback.print_exc() (в том числе в нетронутых блоках ЮKassa) перехватываются
+# и тоже попадают в лог, построчно.
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+LOG_FILE = os.path.join(LOG_DIR, "bot.log")
+
+log = logging.getLogger("vidjet")
+
+
+class _StreamToLogger:
+    """Файлоподобный объект: всё, что в него пишут, уходит в logger построчно."""
+
+    def __init__(self, logger, level, original):
+        self._logger = logger
+        self._level = level
+        self._original = original
+        self._local = threading.local()
+
+    def write(self, text):
+        if not text:
+            return 0
+        # Защита от рекурсии: если ошибка случилась внутри самого logging,
+        # он пишет в sys.stderr — отдаём такой текст в настоящий поток.
+        if getattr(self._local, "busy", False):
+            self._original.write(text)
+            return len(text)
+        self._local.busy = True
+        try:
+            buf = getattr(self._local, "buf", "") + text
+            *lines, rest = buf.split("\n")
+            self._local.buf = rest
+            for line in lines:
+                if line.strip():
+                    self._logger.log(self._level, line.rstrip())
+        finally:
+            self._local.busy = False
+        return len(text)
+
+    def flush(self):
+        rest = getattr(self._local, "buf", "")
+        if rest.strip() and not getattr(self._local, "busy", False):
+            self._local.buf = ""
+            self._local.busy = True
+            try:
+                self._logger.log(self._level, rest.rstrip())
+            finally:
+                self._local.busy = False
+
+    def isatty(self):
+        return False
+
+    def fileno(self):
+        return self._original.fileno()
+
+    @property
+    def encoding(self):
+        return getattr(self._original, "encoding", "utf-8")
+
+
+def setup_logging():
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+    formatter = logging.Formatter(
+        "%(asctime)s %(levelname)-7s [%(threadName)s] %(name)s: %(message)s",
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    file_handler = RotatingFileHandler(LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+
+    console_handler = logging.StreamHandler(sys.__stdout__)
+    console_handler.setFormatter(formatter)
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.addHandler(file_handler)
+    root.addHandler(console_handler)
+
+    # У telebot свой обработчик в stderr — убираем его, иначе каждая строка в journal
+    # будет дублироваться. Записи telebot по-прежнему попадают в наш файл и консоль.
+    tb_logger = logging.getLogger("TeleBot")
+    for handler in list(tb_logger.handlers):
+        tb_logger.removeHandler(handler)
+    tb_logger.propagate = True
+
+    sys.stdout = _StreamToLogger(logging.getLogger("stdout"), logging.INFO, sys.__stdout__)
+    sys.stderr = _StreamToLogger(logging.getLogger("stderr"), logging.ERROR, sys.__stderr__)
+
+    def _thread_excepthook(args):
+        name = args.thread.name if args.thread else "?"
+        log.error("Необработанное исключение в потоке %s", name,
+                  exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+    def _sys_excepthook(exc_type, exc_value, exc_tb):
+        log.critical("Необработанное исключение", exc_info=(exc_type, exc_value, exc_tb))
+
+    threading.excepthook = _thread_excepthook
+    sys.excepthook = _sys_excepthook
+
+
+setup_logging()
 
 # ====================== КОНФИГУРАЦИЯ ======================
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'API.conf')
@@ -169,6 +281,25 @@ def _xui_email_path(email) -> str:
     return quote(str(email), safe="")
 
 
+SLOW_REQUEST_SEC = 5
+
+
+def _xui_call(method: str, path: str, **kwargs):
+    """
+    Запрос к 3x-ui с замером времени. Медленные ответы (≥ SLOW_REQUEST_SEC) пишутся
+    в лог предупреждением — по ним видно, где тормозит панель или ноды.
+    """
+    t0 = time.monotonic()
+    try:
+        return getattr(requests, method.lower())(f"{XUI_URL}{path}", headers=headers, **kwargs)
+    finally:
+        elapsed = time.monotonic() - t0
+        if elapsed >= SLOW_REQUEST_SEC:
+            log.warning("3x-ui %s %s — медленный ответ: %.1f с", method.upper(), path, elapsed)
+        else:
+            log.debug("3x-ui %s %s — %.2f с", method.upper(), path, elapsed)
+
+
 def _xui_json(resp) -> dict:
     try:
         data = resp.json()
@@ -180,11 +311,7 @@ def _xui_json(resp) -> dict:
 def xui_get_client(email):
     """(True, {"client": {...}, "inboundIds": [...]}) или (False, текст ошибки)."""
     try:
-        r = requests.get(
-            f"{XUI_URL}/panel/api/clients/get/{_xui_email_path(email)}",
-            headers=headers,
-            timeout=15
-        )
+        r = _xui_call("GET", f"/panel/api/clients/get/{_xui_email_path(email)}", timeout=15)
         data = _xui_json(r)
         if r.status_code == 200 and data.get("success") and isinstance(data.get("obj"), dict):
             return True, data["obj"]
@@ -195,9 +322,8 @@ def xui_get_client(email):
 
 def xui_attach(email, inbound_ids):
     try:
-        r = requests.post(
-            f"{XUI_URL}/panel/api/clients/{_xui_email_path(email)}/attach",
-            headers=headers,
+        r = _xui_call(
+            "POST", f"/panel/api/clients/{_xui_email_path(email)}/attach",
             json={"inboundIds": list(inbound_ids)},
             timeout=30
         )
@@ -211,9 +337,8 @@ def xui_attach(email, inbound_ids):
 
 def xui_update_client(email, payload: dict):
     try:
-        r = requests.post(
-            f"{XUI_URL}/panel/api/clients/update/{_xui_email_path(email)}",
-            headers=headers,
+        r = _xui_call(
+            "POST", f"/panel/api/clients/update/{_xui_email_path(email)}",
             json=payload,
             timeout=30
         )
@@ -225,11 +350,13 @@ def xui_update_client(email, payload: dict):
         return False, repr(e)
 
 
+_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}")
+
+
 def _is_valid_uuid(value) -> bool:
-    try:
-        return str(uuid.UUID(str(value))) == str(value).lower()
-    except (ValueError, TypeError, AttributeError):
-        return False
+    # Xray принимает UUID как с дефисами, так и 32 hex-символа подряд —
+    # оба варианта считаем нормальными, перевыпускаем только «17», «abc» и т.п.
+    return isinstance(value, str) and bool(_UUID_RE.fullmatch(value.strip()))
 
 
 # Поля ClientRecord, которые нельзя (или не нужно) отправлять в update как есть
@@ -303,10 +430,10 @@ def xui_apply_client_state(email, *, expiry_ms=None, enable=None, tg_id=None,
         if missing:
             ok, err = xui_attach(email, missing)
             if ok:
-                print(f"✅ Привязан {email} → добавил {missing}")
+                log.info(f"✅ Привязан {email} → добавил {missing}")
             else:
                 attach_err = err
-                print(f"⚠️ Не удалось привязать {email} к {missing}: {err}")
+                log.warning(f"⚠️ Не удалось привязать {email} к {missing}: {err}")
 
     payload = _client_payload_from_record(rec)
     if XUI_CLIENT_FLOW:
@@ -409,15 +536,15 @@ def create_vpn_client(uid: int, tg_id: str = None, username: str = None, months:
         data = _xui_json(r)
 
         if r.status_code == 200 and data.get("success"):
-            print(f"✅ Клиент создан: {base_name} | Прикреплён к {len(XUI_INBOUND_IDS)} inbound'ам")
+            log.info(f"✅ Клиент создан: {base_name} | Прикреплён к {len(XUI_INBOUND_IDS)} inbound'ам")
             return True, "", base_name, expiry_ms, sub_id
         else:
             error = data.get("msg") or r.text
-            print(f"❌ Ошибка создания клиента: {error}")
+            log.error(f"❌ Ошибка создания клиента: {error}")
             return False, error, base_name, expiry_ms, sub_id
 
     except Exception as e:
-        print(f"❌ Exception при создании клиента: {e}")
+        log.exception(f"❌ Exception при создании клиента: {e}")
         return False, str(e), base_name, expiry_ms, sub_id
 
 
@@ -436,14 +563,14 @@ def renew_vpn_client(uid: int, tg_id: str = None, username: str = None, months: 
 
         if not user_data or not user_data.get("email"):
             error = f"Email пользователя не найден (uid={uid}, tg_id={tg_id})"
-            print(f"❌ {error}")
+            log.error(f"❌ {error}")
             return False, error, None, None
 
         base_email = user_data["email"]
 
         ok, err, new_expiry, attach_err = xui_extend_client(base_email, months)
         if not ok:
-            print(f"❌ Ошибка продления {base_email}: {err}")
+            log.error(f"❌ Ошибка продления {base_email}: {err}")
             return False, err, base_email, None
 
         if attach_err:
@@ -451,11 +578,11 @@ def renew_vpn_client(uid: int, tg_id: str = None, username: str = None, months: 
 
         update_user_record(uid_key, expiry_time=new_expiry)
 
-        print(f"✅ Подписка продлена: {base_email} → {new_expiry}")
+        log.info(f"✅ Подписка продлена: {base_email} → {new_expiry}")
         return True, "", base_email, new_expiry
 
     except Exception as e:
-        print(f"❌ Ошибка продления: {e}")
+        log.exception(f"❌ Ошибка продления: {e}")
         return False, str(e), None, None
 
 
@@ -475,16 +602,16 @@ def update_tg_id(uid: str, tg_id: int, username: str = "no_username"):
         # Обновляем в 3x-ui (через общий хелпер: правильный UUID и flow)
         ok, err, _ = xui_apply_client_state(base_email, tg_id=int(tg_id), ensure_inbounds=False)
         if not ok:
-            print(f"⚠️ Не удалось обновить tgId в 3x-ui: {err}")
+            log.warning(f"⚠️ Не удалось обновить tgId в 3x-ui: {err}")
 
         # Обновляем в users.json
         update_user_record(uid, tg_id=str(tg_id), username=username)
 
-        print(f"✅ tg_id успешно обновлён для UID {uid} → {tg_id}")
+        log.info(f"✅ tg_id успешно обновлён для UID {uid} → {tg_id}")
         return True, None
 
     except Exception as e:
-        print(f"❌ Ошибка update_tg_id: {e}")
+        log.exception(f"❌ Ошибка update_tg_id: {e}")
         return False, str(e)
 
 
@@ -571,7 +698,7 @@ def acquire_lock():
     try:
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except IOError:
-        print("Bot already running!")
+        log.error("Bot already running!")
         sys.exit(1)
     return lock_file
 
@@ -611,11 +738,11 @@ def safe_send_message(chat_id, text, parse_mode="HTML", reply_markup=None, max_r
                 reply_markup=reply_markup
             )
         except Exception as e:
-            print(f"Попытка {attempt+1}/{max_retries} отправки сообщения не удалась: {e}")
+            log.warning(f"Попытка {attempt+1}/{max_retries} отправки сообщения не удалась: {e}")
             if attempt < max_retries - 1:
                 time.sleep(1.5 * (attempt + 1))  # увеличиваем задержку
             else:
-                print(f"Не удалось отправить сообщение пользователю {chat_id} после {max_retries} попыток")
+                log.warning(f"Не удалось отправить сообщение пользователю {chat_id} после {max_retries} попыток")
                 return None
 
 
@@ -723,7 +850,7 @@ def sub(tg_id, message=None):
             bot.send_message(tg_id, text, parse_mode="HTML", reply_markup=main_menu())
 
     except Exception as e:
-        print(f"Ошибка в sub(): {e}")
+        log.exception(f"Ошибка в sub(): {e}")
         try:
             bot.send_message(tg_id, "❌ Не удалось загрузить информацию о подписке.", reply_markup=main_menu())
         except:
@@ -757,7 +884,7 @@ def process_months_input(message, tg_id, flow = "new"):
         bot.register_next_step_handler(msg, process_months_input, tg_id, flow)
 
     except Exception as e:
-        print(f"Ошибка process_months_input: {e}")
+        log.exception(f"Ошибка process_months_input: {e}")
         msg = bot.send_message(tg_id, "❌ Введите корректное число")
         bot.register_next_step_handler(msg, process_months_input, tg_id, flow)
 
@@ -792,7 +919,7 @@ def admin_notify(tg_id: int, username: str, email: str, months: int, amount: int
     try:
         bot.send_message(ADMIN_ID, text, parse_mode="HTML")
     except Exception as e:
-        print(f"Не удалось отправить уведомление админу: {e}")
+        log.warning(f"Не удалось отправить уведомление админу: {e}")
 
 
 # Уведомления пользователям об истекающих подписках
@@ -814,7 +941,7 @@ def notify_expiring_users():
         return
 
     sent_count = 0
-    print(f"[{now.strftime('%d.%m.%Y %H:%M')}] Запуск ежедневной рассылки уведомлений...")
+    log.info(f"[{now.strftime('%d.%m.%Y %H:%M')}] Запуск ежедневной рассылки уведомлений...")
 
     for uid_key, data in users.items():
         tg_id_raw = data.get("tg_id")
@@ -841,10 +968,10 @@ def notify_expiring_users():
                     "Не забудьте продлить, чтобы не потерять доступ.",
                     parse_mode="HTML"
                 )
-                print(f"✅ Уведомление отправлено (3 дня): {username} (TG: {tg_id})")
+                log.info(f"✅ Уведомление отправлено (3 дня): {username} (TG: {tg_id})")
                 sent_count += 1
             except Exception as e:
-                print(f"Не удалось отправить (3 дня) {tg_id}: {e}")
+                log.warning(f"Не удалось отправить (3 дня) {tg_id}: {e}")
 
         # Проверяем диапазон (последний день)
         elif 0.0 < days_left <= 1.0:
@@ -855,12 +982,12 @@ def notify_expiring_users():
                     "Продлите подписку, чтобы продолжить пользоваться VPN.",
                     parse_mode="HTML"
                 )
-                print(f"✅ Уведомление отправлено (сегодня): {username} (TG: {tg_id})")
+                log.info(f"✅ Уведомление отправлено (сегодня): {username} (TG: {tg_id})")
                 sent_count += 1
             except Exception as e:
-                print(f"Не удалось отправить (сегодня) {tg_id}: {e}")
+                log.warning(f"Не удалось отправить (сегодня) {tg_id}: {e}")
 
-    print(f"Рассылка завершена. Отправлено: {sent_count} уведомлений.")
+    log.info(f"Рассылка завершена. Отправлено: {sent_count} уведомлений.")
 
 
 def check_expiring_subscriptions():
@@ -870,11 +997,11 @@ def check_expiring_subscriptions():
     while True:
         try:
             seconds_to_wait = _seconds_until_next_noon_msk()
-            print(f"[LOG] Следующая проверка подписок через {seconds_to_wait / 3600:.2f} ч. (в 12:00 МСК)")
+            log.info(f"Следующая проверка подписок через {seconds_to_wait / 3600:.2f} ч. (в 12:00 МСК)")
             time.sleep(seconds_to_wait)
             notify_expiring_users()
         except Exception as e:
-            print(f"Ошибка в блоке рассылки: {e}")
+            log.exception(f"Ошибка в блоке рассылки: {e}")
         # Защита от двойного срабатывания, если sleep проснулся чуть раньше 12:00:00
         time.sleep(60)
 
@@ -1096,7 +1223,7 @@ def give_referral_bonus(referrer_uid: str, new_user_uid: str, months: int = 1):
 
         # Проверка: не даём бонус бессрочным пользователям
         if referrer.get("expiry_time") == 0:
-            print(f"ℹ️ Реферер UID {referrer_uid} имеет бессрочную подписку — бонус не выдан")
+            log.info(f"ℹ️ Реферер UID {referrer_uid} имеет бессрочную подписку — бонус не выдан")
             return
 
         email = referrer.get("email")
@@ -1108,7 +1235,7 @@ def give_referral_bonus(referrer_uid: str, new_user_uid: str, months: int = 1):
         # Теперь тот же путь, что и обычное продление.
         ok, err, new_expiry, attach_err = xui_extend_client(email, months)
         if not ok:
-            print(f"❌ Не удалось начислить реферальный бонус {email}: {err}")
+            log.error(f"❌ Не удалось начислить реферальный бонус {email}: {err}")
             try:
                 bot.send_message(
                     ADMIN_ID,
@@ -1139,7 +1266,7 @@ def give_referral_bonus(referrer_uid: str, new_user_uid: str, months: int = 1):
                 pass
 
     except Exception as e:
-        print(f"Ошибка выдачи реферального бонуса: {e}")
+        log.exception(f"Ошибка выдачи реферального бонуса: {e}")
 
 
 
@@ -1196,7 +1323,7 @@ def show_start(chat_id, user):
                 return
 
     except Exception as e:
-        print(f"Ошибка в show_start: {e}")
+        log.exception(f"Ошибка в show_start: {e}")
 
     # Пользователь в процессе оплаты.
     # [FIX] Раньше тут был тупик «🕚 Жду подтверждения» навсегда (до рестарта бота),
@@ -1377,7 +1504,7 @@ def _lookup_username(tg_id) -> str:
         if chat and chat.username:
             return chat.username.lower().replace("@", "")
     except Exception as e:
-        print(f"Не удалось получить username для {tg_id}: {e}")
+        log.warning(f"Не удалось получить username для {tg_id}: {e}")
     return "no_username"
 
 
@@ -1396,11 +1523,11 @@ def process_successful_payment(tg_id: int, months: int, flow: str = "new", refer
     # который панель всё равно отклонит как Duplicate email.
     _, existing = get_user_by_tg_id(tg_id)
     if flow == "new" and existing and existing.get("email"):
-        print(f"ℹ️ tg_id={tg_id} уже имеет клиента {existing.get('email')} — оформляем как продление")
+        log.info(f"ℹ️ tg_id={tg_id} уже имеет клиента {existing.get('email')} — оформляем как продление")
         flow = "renew"
         referrer_uid = None
 
-    print(f"Обработка платежа: flow={flow}, months={months}, tg_id={tg_id}, uid={uid}")
+    log.info(f"Обработка платежа: flow={flow}, months={months}, tg_id={tg_id}, uid={uid}")
 
     if flow == "new":
         final_months = months
@@ -1445,9 +1572,9 @@ def process_successful_payment(tg_id: int, months: int, flow: str = "new", refer
             admin_notify(tg_id, username, email, months, amount, "Продление")
             safe_send_message(tg_id, f"🔄 <b>Подписка успешно продлена на {months} {months_word(months)}!</b>", reply_markup=main_menu())
             sub(tg_id)  # покажет актуальную информацию
-            print(f"✅ Успешное продление для tg_id={tg_id}")
+            log.info(f"✅ Успешное продление для tg_id={tg_id}")
         else:
-            print(f"❌ Ошибка продления: {error_msg}")
+            log.error(f"❌ Ошибка продления: {error_msg}")
             safe_send_message(tg_id, f"❌ Ошибка продления подписки.\nНапишите в поддержку: {SUPPORT}")
             bot.send_message(ADMIN_ID, f"⚠️ Ошибка продления!\nTG: @{username} ({tg_id})\nUID: {uid}\nОшибка: {error_msg}")
 
@@ -1474,7 +1601,7 @@ def send_instruction_video(chat_id):
                 supports_streaming=True
             )
     except Exception as e:
-        print(f"Ошибка отправки видео: {e}")
+        log.exception(f"Ошибка отправки видео: {e}")
         bot.send_message(chat_id, "Не удалось отправить видео-инструкцию. Используйте текстовую инструкцию выше.")
 
 
@@ -1705,7 +1832,7 @@ def users_filter_callback(call):
     try:
         bot.answer_callback_query(call.id)
     except Exception as e:
-        print(f"answer_callback_query: {e}")
+        log.warning(f"answer_callback_query: {e}")
 
     filter_type = call.data.split(":")[1]
 
@@ -1809,7 +1936,7 @@ def get_online_clients():
         if r.status_code == 200 and data.get("success"):
             return set(data.get("obj") or [])
     except Exception as e:
-        print(f"Online check error: {e}")
+        log.exception(f"Online check error: {e}")
     return set()
 
 
@@ -1852,7 +1979,7 @@ def get_all_users_traffic():
                 traffic[base_email]["down"] += client.get("down", 0)
 
     except Exception as e:
-        print(f"Traffic error: {e}")
+        log.exception(f"Traffic error: {e}")
 
     return traffic
 
@@ -2325,6 +2452,9 @@ def get_servers_status():
 
 
 # ========= Реакция на кнопку "Синхронизация пользователей" ============
+SYNC_PROGRESS_EVERY_SEC = 15
+
+
 @bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "🔄 Синхронизировать пользователей")
 def sync_users_handler(message):
     if not is_admin(message.from_user.id):
@@ -2332,38 +2462,59 @@ def sync_users_handler(message):
 
     # [FIX] Не даём запустить две синхронизации параллельно
     if not SYNC_LOCK.acquire(blocking=False):
-        bot.send_message(message.chat.id, "⏳ Синхронизация уже идёт, дождитесь результата.")
+        bot.send_message(message.chat.id, "⏳ Синхронизация уже идёт, дождитесь результата.\nПрогресс — в logs/bot.log.")
         return
 
     msg = bot.send_message(
         message.chat.id,
         "🔄 Запускаю синхронизацию клиентов (inbound'ы, flow, включение, UUID)...\n"
-        "Это может занять время при большом количестве клиентов."
+        "Получаю список клиентов из панели."
     )
+
+    def edit_status(text):
+        try:
+            bot.edit_message_text(chat_id=message.chat.id, message_id=msg.message_id, text=text, parse_mode="HTML")
+        except Exception as e:
+            # «message is not modified» и т.п. — не критично
+            log.debug("Не удалось обновить сообщение о синхронизации: %s", e)
+
+    last_edit = [0.0]
+
+    def progress(done, planned, stats):
+        # Не чаще раза в SYNC_PROGRESS_EVERY_SEC — у Telegram лимиты на редактирование
+        now = time.monotonic()
+        if done < planned and now - last_edit[0] < SYNC_PROGRESS_EVERY_SEC:
+            return
+        last_edit[0] = now
+        edit_status(
+            "🔄 <b>Синхронизация идёт</b>\n\n"
+            f"Исправлено клиентов: <b>{done} / {planned}</b>\n"
+            f"Ошибок пока: <b>{stats['errors']}</b>\n\n"
+            "Подробности — в logs/bot.log"
+        )
 
     # [FIX] Синхронизация идёт в отдельном потоке: раньше она занимала один из двух
     # рабочих потоков telebot, и бот «подвисал» для пользователей на время синка.
     def worker():
+        t0 = time.monotonic()
         try:
-            stats = sync_clients()
-            text = format_sync_report(stats)
+            stats = sync_clients(progress=progress)
+            text = format_sync_report(stats) + f"\n\n⏱ Заняло: {time.monotonic() - t0:.0f} с"
         except Exception as e:
-            traceback.print_exc()
-            text = f"❌ <b>Синхронизация не выполнена</b>\n<code>{html.escape(str(e)[:500])}</code>"
+            log.exception("Синхронизация прервана ошибкой")
+            text = (
+                f"❌ <b>Синхронизация не выполнена</b>\n<code>{html.escape(str(e)[:500])}</code>\n\n"
+                "Трейсбек — в logs/bot.log"
+            )
         finally:
             SYNC_LOCK.release()
 
         try:
-            bot.edit_message_text(
-                chat_id=message.chat.id,
-                message_id=msg.message_id,
-                text=text,
-                parse_mode="HTML"
-            )
+            bot.edit_message_text(chat_id=message.chat.id, message_id=msg.message_id, text=text, parse_mode="HTML")
         except Exception:
             bot.send_message(message.chat.id, text, parse_mode="HTML")
 
-    threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=worker, name="sync", daemon=True).start()
 
 
 def fetch_all_clients(page_size=200, max_pages=500):
@@ -2375,15 +2526,10 @@ def fetch_all_clients(page_size=200, max_pages=500):
     clients = []
     page = 1
     while page <= max_pages:
-        t0 = time.time()
-        r = requests.get(
-            f"{XUI_URL}/panel/api/clients/list/paged",
-            headers=headers,
-            params={"page": page, "pageSize": page_size},
-            timeout=60
-        )
+        t0 = time.monotonic()
+        r = _xui_call("GET", "/panel/api/clients/list/paged",
+                      params={"page": page, "pageSize": page_size}, timeout=60)
         data = _xui_json(r)
-        print(f"clients/list/paged: страница {page}, HTTP {r.status_code}, {time.time()-t0:.1f}с")
 
         if r.status_code != 200 or not data.get("success"):
             raise RuntimeError(f"clients/list/paged → HTTP {r.status_code}: {str(data.get('msg') or r.text)[:300]}")
@@ -2393,6 +2539,9 @@ def fetch_all_clients(page_size=200, max_pages=500):
         clients.extend(items)
 
         total = obj.get("filtered", obj.get("total", 0))
+        log.info("Синхронизация: страница %d — %d клиентов (%d / %d), %.1f с",
+                 page, len(items), len(clients), total, time.monotonic() - t0)
+
         if not items or len(clients) >= total:
             break
         page += 1
@@ -2435,21 +2584,24 @@ def audit_target_inbounds():
     Почему не через GET /clients/get: он отдаёт «эффективный» flow — первый непустой.
     Если flow слетел только на одном inbound из четырёх, GET этого не покажет.
     """
-    r = requests.get(f"{XUI_URL}/panel/api/inbounds/list", headers=headers, timeout=60)
+    r = _xui_call("GET", "/panel/api/inbounds/list", timeout=60)
     data = _xui_json(r)
     if r.status_code != 200 or not data.get("success"):
         raise RuntimeError(f"inbounds/list → HTTP {r.status_code}: {str(data.get('msg') or r.text)[:300]}")
 
     target = set(XUI_INBOUND_IDS)
     flow_broken, bad_uuid = set(), set()
+    seen_ids = set()
 
     for inbound in data.get("obj") or []:
         if inbound.get("id") not in target:
             continue
+        seen_ids.add(inbound.get("id"))
         settings = _as_dict(inbound.get("settings"))
         check_flow = bool(XUI_CLIENT_FLOW) and _inbound_flow_capable(inbound)
         check_uuid = inbound.get("protocol") in ("vless", "vmess")
 
+        ib_flow = ib_uuid = 0
         for entry in settings.get("clients") or []:
             if not isinstance(entry, dict):
                 continue
@@ -2458,13 +2610,22 @@ def audit_target_inbounds():
                 continue
             if check_flow and (entry.get("flow") or "") != XUI_CLIENT_FLOW:
                 flow_broken.add(email)
+                ib_flow += 1
             if check_uuid and entry.get("id") and not _is_valid_uuid(entry.get("id")):
                 bad_uuid.add(email)
+                ib_uuid += 1
+
+        log.info("Синхронизация: inbound %s (%s, flow-совместим: %s) — без flow: %d, плохой UUID: %d",
+                 inbound.get("id"), inbound.get("protocol"), "да" if check_flow else "нет", ib_flow, ib_uuid)
+
+    missing_ids = target - seen_ids
+    if missing_ids:
+        log.warning("Синхронизация: inbound'ов %s из XUI_INBOUND_IDS нет в панели", sorted(missing_ids))
 
     return flow_broken, bad_uuid
 
 
-def sync_clients() -> dict:
+def sync_clients(progress=None) -> dict:
     """
     Проверяет всех клиентов панели и чинит:
       • недостающие inbound'ы из XUI_INBOUND_IDS;
@@ -2477,11 +2638,17 @@ def sync_clients() -> dict:
       • истёкшие — пропускаются;
       • выключенные, но не оплаченные по данным бота (например, отключены вручную в панели
         и не из бота) — пропускаются и показываются отдельной строкой.
+
+    Работает в два прохода: сначала составляет план (быстро, без запросов к панели),
+    потом исправляет клиентов по одному, логируя каждого.
+    progress(done, planned, stats) вызывается после каждого исправленного клиента.
     """
     stats = {
         "total": 0, "ok": 0, "attached": 0, "flow_fixed": 0, "uuid_fixed": 0, "enabled": 0,
         "skipped_expired": 0, "skipped_disabled": 0, "errors": 0, "missing_in_panel": 0,
     }
+
+    log.info("Синхронизация: старт. Целевые inbound'ы: %s, flow: %r", XUI_INBOUND_IDS, XUI_CLIENT_FLOW)
 
     clients = fetch_all_clients()
     flow_broken, bad_uuid = audit_target_inbounds()
@@ -2493,6 +2660,8 @@ def sync_clients() -> dict:
     now_ms = int(time.time() * 1000)
     panel_emails = set()
 
+    # ---------- Проход 1: план ----------
+    plan = []  # (email, missing, need_flow, need_uuid, need_enable)
     for client in clients:
         email = client.get("email")
         if not email:
@@ -2520,7 +2689,7 @@ def sync_clients() -> dict:
                 continue
             need_enable = True
 
-        missing = target - set(client.get("inboundIds") or [])
+        missing = sorted(target - set(client.get("inboundIds") or []))
         need_flow = email in flow_broken
         need_uuid = email in bad_uuid
 
@@ -2528,30 +2697,63 @@ def sync_clients() -> dict:
             stats["ok"] += 1
             continue
 
-        ok, err, attach_err = xui_apply_client_state(
-            email,
-            enable=True if need_enable else None,
-            regenerate_uuid=need_uuid,
-        )
-
-        if not ok or attach_err:
-            stats["errors"] += 1
-            print(f"⚠️ Синхронизация {email}: {err or ''} {attach_err or ''}".strip())
-            continue
-
-        if missing:
-            stats["attached"] += 1
-        if need_flow:
-            stats["flow_fixed"] += 1
-        if need_uuid:
-            stats["uuid_fixed"] += 1
-            print(f"🔑 {email}: UUID перевыпущен (был не-UUID)")
-        if need_enable:
-            stats["enabled"] += 1
+        plan.append((email, missing, need_flow, need_uuid, need_enable))
 
     stats["missing_in_panel"] = len(set(bot_users) - panel_emails)
 
-    print(f"Синхронизация завершена: {stats}")
+    log.info(
+        "Синхронизация: план — всего %d, в порядке %d, к исправлению %d "
+        "(attach: %d, flow: %d, uuid: %d, включить: %d), пропуск: истёк %d, выключен %d",
+        stats["total"], stats["ok"], len(plan),
+        sum(1 for p in plan if p[1]), sum(1 for p in plan if p[2]),
+        sum(1 for p in plan if p[3]), sum(1 for p in plan if p[4]),
+        stats["skipped_expired"], stats["skipped_disabled"],
+    )
+
+    if progress:
+        progress(0, len(plan), stats)
+
+    # ---------- Проход 2: исправления ----------
+    for index, (email, missing, need_flow, need_uuid, need_enable) in enumerate(plan, start=1):
+        what = ", ".join(filter(None, [
+            f"attach {missing}" if missing else "",
+            "flow" if need_flow else "",
+            "uuid" if need_uuid else "",
+            "enable" if need_enable else "",
+        ]))
+        t0 = time.monotonic()
+        try:
+            ok, err, attach_err = xui_apply_client_state(
+                email,
+                enable=True if need_enable else None,
+                regenerate_uuid=need_uuid,
+            )
+        except Exception as e:
+            log.exception("Синхронизация [%d/%d] %s: исключение", index, len(plan), email)
+            ok, err, attach_err = False, repr(e), ""
+
+        elapsed = time.monotonic() - t0
+
+        if not ok or attach_err:
+            stats["errors"] += 1
+            log.error("Синхронизация [%d/%d] %s: ОШИБКА (%s) за %.1f с — %s %s",
+                      index, len(plan), email, what, elapsed, err or "", attach_err or "")
+        else:
+            if missing:
+                stats["attached"] += 1
+            if need_flow:
+                stats["flow_fixed"] += 1
+            if need_uuid:
+                stats["uuid_fixed"] += 1
+            if need_enable:
+                stats["enabled"] += 1
+            log.info("Синхронизация [%d/%d] %s: исправлено (%s) за %.1f с",
+                     index, len(plan), email, what, elapsed)
+
+        if progress:
+            progress(index, len(plan), stats)
+
+    log.info("Синхронизация завершена: %s", stats)
     return stats
 
 
@@ -2692,7 +2894,7 @@ def yookassa_webhook():
 
 # Запуск проверки истёкших подписок в фоне
 def start_expiry_checker():
-    thread = threading.Thread(target=check_expiring_subscriptions, daemon=True)
+    thread = threading.Thread(target=check_expiring_subscriptions, name="expiry-checker", daemon=True)
     thread.start()
 
 # Основной запуск программы
@@ -2700,17 +2902,17 @@ if __name__ == '__main__':
     lock_file = acquire_lock()
     try:
         load_users()
-        print("Bot successfully started")
+        log.info("Bot successfully started. Лог: %s", LOG_FILE)
         start_expiry_checker()
 
         # Запускаем Flask webhook в отдельном потоке
         def run_flask():
             app.run(host='127.0.0.1', port=FLASK_PORT, debug=False)
 
-        flask_thread = threading.Thread(target=run_flask, daemon=True)
+        flask_thread = threading.Thread(target=run_flask, name="flask", daemon=True)
         flask_thread.start()
-        print(f"🌐 Flask webhook сервер запущен на http://127.0.0.1:{FLASK_PORT}")
+        log.info(f"🌐 Flask webhook сервер запущен на http://127.0.0.1:{FLASK_PORT}")
 
         bot.infinity_polling(skip_pending=True)
-    except Exception as e:
-        print(f"Fatal error: {e}")
+    except Exception:
+        log.exception("Fatal error")
