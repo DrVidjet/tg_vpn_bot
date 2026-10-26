@@ -446,6 +446,58 @@ def xui_update_client(email, payload: dict):
         return False, repr(e)
 
 
+XUI_INBOUNDS_CACHE_TTL = 300
+_xui_inbounds_cache = {"ts": 0.0, "ids": None}
+_xui_inbounds_lock = threading.Lock()
+_xui_stale_reported = set()
+
+
+def xui_target_inbound_ids() -> list:
+    """
+    [FIX] XUI_INBOUND_IDS без inbound'ов, которых уже нет в панели.
+    clients/add отклоняет ВЕСЬ запрос, если хоть один inboundId не существует
+    («inbound 99: record not found»), а attach падает на нём с ошибкой. После удаления
+    inbound'а в панели бот переставал заводить новых пользователей, а продление
+    сообщало об ошибке. Теперь несуществующие ID отбрасываются, а админ получает
+    одно уведомление, чтобы поправить API.conf.
+    Если список получить не удалось — возвращаем XUI_INBOUND_IDS как есть.
+    """
+    with _xui_inbounds_lock:
+        now = time.monotonic()
+        live = _xui_inbounds_cache["ids"]
+        if live is None or now - _xui_inbounds_cache["ts"] > XUI_INBOUNDS_CACHE_TTL:
+            try:
+                r = _xui_call("GET", "/panel/api/inbounds/list/slim", timeout=30)
+                data = _xui_json(r)
+                if r.status_code == 200 and data.get("success"):
+                    live = {i.get("id") for i in data.get("obj") or []}
+                    _xui_inbounds_cache.update(ts=now, ids=live)
+                else:
+                    log.warning("inbounds/list/slim → %s", data.get("msg") or f"HTTP {r.status_code}")
+            except Exception as e:
+                log.warning("Не удалось получить список inbound'ов: %r", e)
+        if not live:
+            return list(XUI_INBOUND_IDS)
+
+        stale = sorted(set(XUI_INBOUND_IDS) - live)
+        new_stale = set(stale) - _xui_stale_reported
+        _xui_stale_reported.update(new_stale)
+
+    if new_stale:
+        log.error("XUI_INBOUND_IDS: inbound'ов %s нет в панели — пропускаю их", stale)
+        try:
+            bot.send_message(
+                ADMIN_ID,
+                f"⚠️ В API.conf (XUI_INBOUND_IDS) указаны inbound'ы, которых нет в панели: "
+                f"<code>{', '.join(map(str, stale))}</code>\n"
+                f"Бот их пропускает. Исправьте XUI_INBOUND_IDS и перезапустите бота.",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+    return [i for i in XUI_INBOUND_IDS if i in live]
+
+
 _UUID_RE = re.compile(r"[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}")
 
 
@@ -522,7 +574,7 @@ def xui_apply_client_state(email, *, expiry_ms=None, enable=None, tg_id=None,
     attach_err = ""
 
     if ensure_inbounds:
-        missing = sorted(set(XUI_INBOUND_IDS) - set(obj.get("inboundIds") or []))
+        missing = sorted(set(xui_target_inbound_ids()) - set(obj.get("inboundIds") or []))
         if missing:
             ok, err = xui_attach(email, missing)
             if ok:
@@ -617,9 +669,10 @@ def create_vpn_client(uid: int, tg_id: str = None, username: str = None, months:
         "flow": XUI_CLIENT_FLOW,
     }
 
+    inbound_ids = xui_target_inbound_ids()
     payload = {
         "client": client_payload,
-        "inboundIds": XUI_INBOUND_IDS
+        "inboundIds": inbound_ids
     }
 
     try:
@@ -628,7 +681,7 @@ def create_vpn_client(uid: int, tg_id: str = None, username: str = None, months:
         data = _xui_json(r)
 
         if r.status_code == 200 and data.get("success"):
-            log.info(f"✅ Клиент создан: {base_name} | Прикреплён к {len(XUI_INBOUND_IDS)} inbound'ам")
+            log.info(f"✅ Клиент создан: {base_name} | Прикреплён к {len(inbound_ids)} inbound'ам")
             return True, "", base_name, expiry_ms, sub_id
         else:
             error = data.get("msg") or r.text
@@ -2744,7 +2797,7 @@ def sync_clients(progress=None) -> dict:
     users = load_users_db()
     bot_users = {u.get("email"): u for u in users.values() if u.get("email")}
 
-    target = set(XUI_INBOUND_IDS)
+    target = set(xui_target_inbound_ids())
     now_ms = int(time.time() * 1000)
     panel_emails = set()
 
@@ -2947,9 +3000,44 @@ def yookassa_webhook():
             print(f"ℹ️ Ignored event: {event_type}")
             return jsonify({"status": "ok"}), 200
 
-        payment = event.get('object', {})
-        payment_id = payment.get('id')
-        metadata = payment.get('metadata', {})
+        payment_id = (event.get('object') or {}).get('id')
+        if not payment_id:
+            print("❌ No payment id in webhook")
+            return jsonify({"status": "error"}), 200
+
+        # [FIX] ЮKassa повторяет уведомления (до 24 ч), и одно и то же уведомление
+        # раньше обрабатывалось повторно. Плюс тело вебхука ничем не подтверждено —
+        # по документации статус нужно сверять через API. Лок сериализует
+        # параллельные повторы, чтобы второй увидел платёж уже обработанным.
+        with WEBHOOK_LOCK:
+            if payment_id in load_processed_payments():
+                print(f"ℹ️ Payment {payment_id} already processed — skip")
+                return jsonify({"status": "ok"}), 200
+            return _handle_succeeded_payment(payment_id)
+
+    except Exception as e:
+        print(f"❌ WEBHOOK CRITICAL ERROR: {e}")
+        traceback.print_exc()
+        return jsonify({"status": "ok"}), 200  # YooKassa требует 200
+
+
+WEBHOOK_LOCK = threading.Lock()
+
+
+def _handle_succeeded_payment(payment_id):
+    try:
+        verified = Payment.find_one(payment_id)
+    except Exception as e:
+        # Не 200 — ЮKassa повторит уведомление позже
+        print(f"❌ Не удалось проверить платёж {payment_id} в ЮKassa: {e}")
+        return jsonify({"status": "retry"}), 500
+
+    if verified.status != "succeeded" or not verified.paid:
+        print(f"⚠️ Payment {payment_id}: статус в ЮKassa {verified.status!r}, paid={verified.paid} — игнорирую")
+        return jsonify({"status": "ok"}), 200
+
+    try:
+        metadata = dict(verified.metadata or {})
 
         tg_id_str = metadata.get('tg_id')
         months = int(metadata.get('months', 1))
