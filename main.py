@@ -164,6 +164,9 @@ API_TOKEN = config.get('TG', 'API').strip('"')
 ADMIN_ID = config.getint('TG', 'ADMIN_ID')
 SUPPORT = config.get('TG', 'SUPPORT_LINK').strip('"')
 GRUPP = config.get('TG', 'GRUPP_LINK').strip('"')
+# Параметр НЕОБЯЗАТЕЛЬНЫЙ: прокси только для Telegram Bot API (например, HTTP-инбаунд 3x-ui
+# на 127.0.0.1, когда бот стоит в РФ). ЮKassa и панель 3x-ui ходят напрямую.
+TG_PROXY = config.get('TG', 'PROXY', fallback='').strip('"')
 PRICE_PER_MONTH = config.getint('CELL', 'PRICE_PER_MONTH')
 FIRST_DISCOUNT_COUNT_MONTH= config.getint('CELL', 'FIRST_DISCOUNT_COUNT_MONTH')
 PRICE_PER_ONE_FIRST_DISCOUNT_MONTH = config.getint('CELL', 'PRICE_PER_ONE_FIRST_DISCOUNT_MONTH')
@@ -214,6 +217,8 @@ headers = {
 }
 
 # Инициализируем бота
+if TG_PROXY:
+    telebot.apihelper.proxy = {'http': TG_PROXY, 'https': TG_PROXY}
 bot = telebot.TeleBot(API_TOKEN,
                       parse_mode=None,
                       disable_web_page_preview=False)

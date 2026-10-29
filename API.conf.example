@@ -3,6 +3,7 @@ ADMIN_ID=00000000000 				# ID админа
 SUPPORT_LINK=""					# Ссылка на техподдержку
 GRUPP_LINK=""					# Ссылка на группу в тг
 API=""						# API ключ бота (можно узнать у bot_father)
+#PROXY="http://127.0.0.1:10850"			# Необязательно: прокси для Telegram Bot API (HTTP-инбаунд 3x-ui)
 
 [CELL]
 PRICE_PER_MONTH=150				# Цена за месяц
